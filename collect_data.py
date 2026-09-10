@@ -7,6 +7,9 @@ import math
 
 HOST = "127.0.0.1"
 
+SAMPLE_RATE_HZ = 5
+SAMPLE_INTERVAL = 1.0 / SAMPLE_RATE_HZ
+
 MOTIONSIM_PORT = 4445
 OUTGAUGE_PORT = 4444
 
@@ -23,6 +26,34 @@ lock = threading.Lock()
 # ============================================================
 # MOTIONSIM
 # ============================================================
+
+def clean_number(value):
+    """
+    Convert BeamNG telemetry values into normal Python numbers.
+    """
+
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8", errors="ignore")
+        except:
+            return 0.0
+
+    if isinstance(value, str):
+
+        value = value.strip()
+
+        # Remove byte-string representation if present
+        if value.startswith("b'") or value.startswith('b"'):
+            try:
+                value = eval(value)
+            except:
+                pass
+
+    try:
+        return float(value)
+    except:
+        return 0.0
+
 
 def motion_listener():
 
@@ -215,176 +246,80 @@ def calculate_direction(vx, vy, vz):
 
 
 def csv_writer():
+    print(f"[CSV] Recording at {SAMPLE_RATE_HZ} Hz")
 
-    global running
+    fieldnames = [
+        "t_s", "seq",
+        "x_m", "y_m", "z_m",
+        "vx_mps", "vy_mps", "vz_mps",
+        "speed_mps",
+        "ax_mps2", "ay_mps2", "az_mps2",
+        "dir_x", "dir_y", "dir_z",
 
-    seq = 0
-    start_time = None
+        "rpm",
+        "engine_torque_nm",
+        "engine_av_rads",
+        "engine_load",
+        "exhaust_flow",
 
-    with open(
-        OUTPUT_FILE,
-        "w",
-        newline="",
-        encoding="utf-8"
-    ) as file:
+        "gear_index",
+        "clutch_ratio",
+        "throttle",
+        "brake",
+        "steering",
 
+        "wheel_av_fl",
+        "wheel_av_fr",
+        "wheel_av_rl",
+        "wheel_av_rr",
+
+        "brake_temp_fl",
+        "brake_temp_fr",
+        "brake_temp_rl",
+        "brake_temp_rr",
+
+        "downforce_fl",
+        "coolant_c",
+        "oil_c",
+        "fuel_volume_l",
+        "odometer_m",
+        "trip_m",
+        "altitude_m",
+
+        "ignition_level",
+        "parkingbrake",
+        "avg_wheel_av",
+        "engine_running",
+        "damage"
+    ]
+
+    with open("telemetry.csv", "w", newline="") as f:
         writer = csv.DictWriter(
-            file,
-            fieldnames=FIELDS
+            f,
+            fieldnames=fieldnames,
+            extrasaction="ignore"
         )
 
         writer.writeheader()
 
-        print(f"[CSV] Recording to {OUTPUT_FILE}")
+        next_sample = time.monotonic()
 
-        while running:
+        while True:
+            now = time.monotonic()
 
-            time.sleep(0.01)
+            if now >= next_sample:
 
-            with lock:
+                with data_lock:
+                    row = latest_data.copy()
 
-                motion = motion_latest
-                gauge = outgauge_latest
+                if row:
+                    writer.writerow(row)
+                    f.flush()
 
-            if motion is None:
-                continue
+                next_sample += SAMPLE_INTERVAL
 
-            if gauge is None:
-                continue
-
-            if start_time is None:
-                start_time = motion["timestamp"]
-
-            vx = motion["vx_mps"]
-            vy = motion["vy_mps"]
-            vz = motion["vz_mps"]
-
-            speed = calculate_speed(vx, vy, vz)
-
-            dx, dy, dz = calculate_direction(
-                vx,
-                vy,
-                vz
-            )
-
-            rpm = gauge["rpm"]
-
-            row = {
-
-                "t_s":
-                    motion["timestamp"] - start_time,
-
-                "seq":
-                    seq,
-
-                "x_m":
-                    motion["x_m"],
-
-                "y_m":
-                    motion["y_m"],
-
-                "z_m":
-                    motion["z_m"],
-
-                "vx_mps":
-                    vx,
-
-                "vy_mps":
-                    vy,
-
-                "vz_mps":
-                    vz,
-
-                "speed_mps":
-                    speed,
-
-                "ax_mps2":
-                    motion["ax_mps2"],
-
-                "ay_mps2":
-                    motion["ay_mps2"],
-
-                "az_mps2":
-                    motion["az_mps2"],
-
-                "dir_x":
-                    dx,
-
-                "dir_y":
-                    dy,
-
-                "dir_z":
-                    dz,
-
-                "rpm":
-                    rpm,
-
-                "engine_av_rads":
-                    rpm * 2 * math.pi / 60,
-
-                "gear_index":
-                    gauge["gear_index"],
-
-                "throttle":
-                    gauge["throttle"],
-
-                "brake":
-                    gauge["brake"],
-
-                "clutch":
-                    gauge["clutch"],
-
-                "coolant_c":
-                    gauge["coolant_c"],
-
-                "oil_c":
-                    gauge["oil_c"],
-
-                "fuel":
-                    gauge["fuel"],
-
-                "roll":
-                    motion["roll"],
-
-                "pitch":
-                    motion["pitch"],
-
-                "yaw":
-                    motion["yaw"],
-
-                "roll_vel":
-                    motion["roll_vel"],
-
-                "pitch_vel":
-                    motion["pitch_vel"],
-
-                "yaw_vel":
-                    motion["yaw_vel"],
-
-                "roll_acc":
-                    motion["roll_acc"],
-
-                "pitch_acc":
-                    motion["pitch_acc"],
-
-                "yaw_acc":
-                    motion["yaw_acc"],
-            }
-
-            writer.writerow(row)
-
-            seq += 1
-
-            if seq % 100 == 0:
-
-                print(
-                    f"Samples={seq:6d} | "
-                    f"Speed={speed:6.2f} m/s | "
-                    f"RPM={rpm:6.0f}"
-                )
-
-            file.flush()
-
+            else:
+                time.sleep(0.005)
 
 # ============================================================
 # MAIN

@@ -1,12 +1,19 @@
-from beamng_client import BeamNGMCP
-import time
+import requests
 import json
 import math
+import time
+import sys
 
 
 # ============================================================
+# CONFIGURATION
+# ============================================================
+
+MCP_URL = "http://127.0.0.1:29292/mcp"
+
+# ------------------------------------------------------------
 # POINT B
-# ============================================================
+# ------------------------------------------------------------
 
 POINT_B = {
     "x": -822.21875,
@@ -14,287 +21,533 @@ POINT_B = {
     "z": 119.6600189209
 }
 
+# ------------------------------------------------------------
+# DRIVING SETTINGS
+# ------------------------------------------------------------
 
-# ============================================================
-# DRIVER SETTINGS
-# ============================================================
+# 80 mph -> m/s
+MAX_SPEED_MPS = 80.0 * 0.44704
 
-ROUTE_SPEED = 12.0       # 43.2 km/h
-AGGRESSION = 0.2
+# Minimum A -> B straight-line distance
+MIN_DISTANCE_M = 5000.0
 
-CHECK_INTERVAL = 2.0
+# Consider destination reached inside this radius
+ARRIVAL_DISTANCE_M = 12.0
 
-# Distance considered "reached"
-TARGET_DISTANCE = 8.0
-
-# If vehicle moves less than this for several checks,
-# consider it stuck.
-MIN_MOVEMENT = 0.5
-
-MAX_STUCK_CHECKS = 5
+# Position checking interval
+CHECK_INTERVAL = 1.0
 
 
 # ============================================================
-# HELPER
+# MCP REQUEST
 # ============================================================
 
-def extract_position(response):
+request_id = 0
+
+
+def call_mcp(tool_name, arguments):
+    """
+    Calls BeamNG's MCP server.
+    """
+
+    global request_id
+
+    request_id += 1
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": arguments
+        }
+    }
 
     try:
 
-        data = json.loads(response)
+        response = requests.post(
+            MCP_URL,
+            json=payload,
+            timeout=10
+        )
 
-        text = data["result"]["content"][0]["text"]
+        response.raise_for_status()
 
-        vehicle = json.loads(text)
+        data = response.json()
 
-        return vehicle["pos"]
+        return data
+
+    except requests.exceptions.ConnectionError:
+
+        print()
+        print("ERROR: Could not connect to BeamNG MCP.")
+        print()
+        print("Make sure:")
+        print("1. BeamNG.drive is running")
+        print("2. MCP server is enabled")
+        print("3. MCP server is listening on:")
+        print(MCP_URL)
+        print()
+
+        sys.exit(1)
+
+    except Exception as e:
+
+        print("MCP ERROR:", e)
+        return None
+
+
+# ============================================================
+# EXTRACT MCP TEXT RESULT
+# ============================================================
+
+def extract_text(response):
+
+    if response is None:
+        return None
+
+    try:
+
+        content = response["result"]["content"]
+
+        for item in content:
+
+            if item.get("type") == "text":
+
+                return item["text"]
+
+    except Exception:
+        pass
+
+    return None
+
+
+# ============================================================
+# GET VEHICLE POSITION
+# ============================================================
+
+def get_position():
+
+    response = call_mcp(
+        "get_position",
+        {}
+    )
+
+    text = extract_text(response)
+
+    if text is None:
+
+        print("Could not read vehicle position.")
+        print(response)
+
+        return None
+
+    try:
+
+        data = json.loads(text)
+
+        return data["pos"]
 
     except Exception as e:
 
         print("Position parsing error:", e)
+        print("Raw response:", text)
 
         return None
 
 
-def distance(p1, p2):
+# ============================================================
+# DISTANCE BETWEEN TWO POSITIONS
+# ============================================================
+
+def distance(a, b):
+
+    dx = a["x"] - b["x"]
+    dy = a["y"] - b["y"]
+    dz = a["z"] - b["z"]
 
     return math.sqrt(
-        (p1["x"] - p2["x"]) ** 2 +
-        (p1["y"] - p2["y"]) ** 2 +
-        (p1["z"] - p2["z"]) ** 2
+        dx * dx +
+        dy * dy +
+        dz * dz
     )
 
 
 # ============================================================
-# START
+# GET CURRENT VEHICLE STATUS
 # ============================================================
 
-print("==============================")
-print(" BeamNG Realistic A -> B Test")
-print("==============================")
+def get_status():
 
-
-bng = BeamNGMCP()
-
-
-# ============================================================
-# GET START POSITION
-# ============================================================
-
-response = bng.call(
-    "get_position",
-    {}
-)
-
-start_pos = extract_position(response)
-
-print("\nSTART POSITION:")
-
-if start_pos:
-    print(
-        f"X={start_pos['x']:.2f} "
-        f"Y={start_pos['y']:.2f} "
-        f"Z={start_pos['z']:.2f}"
+    response = call_mcp(
+        "get_status",
+        {}
     )
 
+    text = extract_text(response)
+
+    if text is None:
+        return None
+
+    try:
+        return json.loads(text)
+
+    except Exception:
+        return None
+
 
 # ============================================================
-# CLEAR INSTABILITY
+# CHECK FOR INSTABILITY
 # ============================================================
 
-bng.call(
-    "get_instability",
-    {
-        "clear": True
-    }
-)
+def check_instability():
+
+    response = call_mcp(
+        "get_instability",
+        {
+            "clear": True
+        }
+    )
+
+    text = extract_text(response)
+
+    if text is None:
+        return 0
+
+    try:
+
+        data = json.loads(text)
+
+        return data.get("count", 0)
+
+    except Exception:
+
+        return 0
 
 
 # ============================================================
 # START DRIVING
 # ============================================================
 
-print("\n==============================")
-print("Starting AI driver")
-print("==============================")
+def start_drive():
 
-print(
-    f"Target: "
-    f"{POINT_B['x']:.2f}, "
-    f"{POINT_B['y']:.2f}, "
-    f"{POINT_B['z']:.2f}"
-)
+    print()
+    print("=" * 60)
+    print("STARTING BEAMNG NAVIGATION")
+    print("=" * 60)
 
-print(f"Speed: {ROUTE_SPEED} m/s")
-print(f"Speed: {ROUTE_SPEED * 3.6:.1f} km/h")
-print(f"Aggression: {AGGRESSION}")
+    print()
+    print("Driving mode:")
+    print("  Navigation AI        : ON")
+    print("  Lane following       : ON")
+    print("  Traffic avoidance    : ON")
+    print("  Aggression parameter  : NOT USED")
+    print("  Maximum speed        : 80 mph")
+    print("  Speed mode           : LIMIT")
+    print()
 
+    response = call_mcp(
+        "drive_to",
+        {
+            "pos": POINT_B,
 
-result = bng.call(
-    "drive_to",
-    {
-        "pos": POINT_B,
+            # 80 mph maximum
+            "routeSpeed": MAX_SPEED_MPS,
 
-        "routeSpeed": ROUTE_SPEED,
+            # IMPORTANT:
+            # This is a maximum, NOT a constant target speed.
+            "routeSpeedMode": "limit",
 
-        "routeSpeedMode": "set",
+            # Stay on the proper lane.
+            "driveInLane": "on",
 
-        "aggression": AGGRESSION,
+            # Avoid other vehicles.
+            "avoidCars": "on"
+        }
+    )
 
-        "avoidCars": "on",
+    print("BeamNG response:")
 
-        "driveInLane": "on"
-    }
-)
+    text = extract_text(response)
 
-print("\nDrive command:")
-print(result)
+    if text:
+        print(text)
+
+    print()
+
+    return response
 
 
 # ============================================================
-# MONITOR
+# MAIN EXPERIMENT
 # ============================================================
 
-previous_pos = start_pos
+def main():
 
-stuck_checks = 0
+    print()
+    print("=" * 60)
+    print("       BEAMNG HUMAN-LIKE DRIVE TEST")
+    print("=" * 60)
+    print()
 
-start_time = time.time()
+    # --------------------------------------------------------
+    # Get Point A
+    # --------------------------------------------------------
 
+    print("Getting current vehicle position...")
 
-try:
+    point_a = get_position()
+
+    if point_a is None:
+
+        print("Could not obtain Point A.")
+        return
+
+    print()
+    print("POINT A")
+    print(
+        f"X = {point_a['x']:.3f}\n"
+        f"Y = {point_a['y']:.3f}\n"
+        f"Z = {point_a['z']:.3f}"
+    )
+
+    print()
+    print("POINT B")
+    print(
+        f"X = {POINT_B['x']:.3f}\n"
+        f"Y = {POINT_B['y']:.3f}\n"
+        f"Z = {POINT_B['z']:.3f}"
+    )
+
+    # --------------------------------------------------------
+    # Calculate distance
+    # --------------------------------------------------------
+
+    start_distance = distance(
+        point_a,
+        POINT_B
+    )
+
+    print()
+    print(
+        f"Straight-line distance: "
+        f"{start_distance:.2f} m"
+    )
+
+    print(
+        f"Straight-line distance: "
+        f"{start_distance / 1000:.2f} km"
+    )
+
+    # --------------------------------------------------------
+    # Minimum 5 km requirement
+    # --------------------------------------------------------
+
+    if start_distance < MIN_DISTANCE_M:
+
+        print()
+        print("=" * 60)
+        print("DISTANCE TOO SHORT")
+        print("=" * 60)
+
+        print(
+            f"Required minimum : "
+            f"{MIN_DISTANCE_M / 1000:.1f} km"
+        )
+
+        print(
+            f"Current distance : "
+            f"{start_distance / 1000:.2f} km"
+        )
+
+        print()
+        print("Choose a farther Point B.")
+
+        return
+
+    print()
+    print("5 km minimum requirement: PASS")
+
+    # --------------------------------------------------------
+    # Start AI
+    # --------------------------------------------------------
+
+    start_drive()
+
+    print("=" * 60)
+    print("VEHICLE IS NOW DRIVING")
+    print("=" * 60)
+
+    print()
+    print("Press CTRL+C to stop manually.")
+    print()
+
+    # --------------------------------------------------------
+    # Monitor vehicle
+    # --------------------------------------------------------
+
+    last_distance = start_distance
+
+    total_progress = 0.0
 
     while True:
 
-        time.sleep(CHECK_INTERVAL)
+        try:
 
-        response = bng.call(
-            "get_position",
-            {}
-        )
+            time.sleep(CHECK_INTERVAL)
 
-        current_pos = extract_position(response)
+            # ------------------------------------------------
+            # Position
+            # ------------------------------------------------
 
-        if current_pos is None:
-            continue
+            position = get_position()
 
+            if position is None:
 
-        # ----------------------------------------------------
-        # DISTANCE TO TARGET
-        # ----------------------------------------------------
+                print("Position unavailable.")
+                continue
 
-        target_distance = distance(
-            current_pos,
-            POINT_B
-        )
-
-
-        # ----------------------------------------------------
-        # MOVEMENT
-        # ----------------------------------------------------
-
-        movement = 0
-
-        if previous_pos:
-
-            movement = distance(
-                current_pos,
-                previous_pos
+            current_distance = distance(
+                position,
+                POINT_B
             )
 
+            # ------------------------------------------------
+            # Progress
+            # ------------------------------------------------
 
-        # ----------------------------------------------------
-        # TIME
-        # ----------------------------------------------------
+            progress = last_distance - current_distance
 
-        elapsed = time.time() - start_time
+            if progress > 0:
+                total_progress += progress
 
+            last_distance = current_distance
 
-        print(
-            f"\nTime: {elapsed:6.1f}s"
-            f" | Distance to B: {target_distance:7.2f} m"
-            f" | Movement: {movement:5.2f} m"
-        )
+            # ------------------------------------------------
+            # Status
+            # ------------------------------------------------
 
+            status = get_status()
 
-        # ----------------------------------------------------
-        # CHECK IF REACHED
-        # ----------------------------------------------------
+            speed = None
 
-        if target_distance <= TARGET_DISTANCE:
+            if status:
 
-            print("\n================================")
-            print(" TARGET REACHED!")
-            print("================================")
+                try:
 
-            break
+                    speed = status.get(
+                        "speed"
+                    )
 
+                except Exception:
+                    speed = None
 
-        # ----------------------------------------------------
-        # CHECK IF STUCK
-        # ----------------------------------------------------
-
-        if movement < MIN_MOVEMENT:
-
-            stuck_checks += 1
+            # ------------------------------------------------
+            # Print
+            # ------------------------------------------------
 
             print(
-                f"Vehicle may be stuck "
-                f"({stuck_checks}/{MAX_STUCK_CHECKS})"
+                f"Distance: "
+                f"{current_distance:8.2f} m"
+                f" | Progress: "
+                f"{total_progress:8.2f} m"
+                + (
+                    f" | Speed: {speed:.2f} m/s"
+                    if isinstance(speed, (int, float))
+                    else ""
+                )
             )
 
-        else:
+            # ------------------------------------------------
+            # Instability
+            # ------------------------------------------------
 
-            stuck_checks = 0
+            instability = check_instability()
 
+            if instability > 0:
 
-        if stuck_checks >= MAX_STUCK_CHECKS:
+                print()
+                print("WARNING!")
+                print(
+                    f"BeamNG reported "
+                    f"{instability} instability event(s)."
+                )
+                print()
 
-            print("\n================================")
-            print(" VEHICLE APPEARS STUCK")
-            print(" Stopping experiment")
-            print("================================")
+            # ------------------------------------------------
+            # ARRIVAL
+            # ------------------------------------------------
+
+            if current_distance <= ARRIVAL_DISTANCE_M:
+
+                print()
+                print("=" * 60)
+                print("           DESTINATION REACHED")
+                print("=" * 60)
+
+                print()
+                print(
+                    f"Final distance: "
+                    f"{current_distance:.2f} m"
+                )
+
+                print(
+                    f"Total progress: "
+                    f"{total_progress:.2f} m"
+                )
+
+                print()
+
+                # IMPORTANT:
+                #
+                # We DO NOT:
+                # - inject parking brake
+                # - remove parking brake
+                # - inject throttle
+                # - inject steering
+                # - inject brake
+                #
+                # BeamNG AI owns the vehicle.
+                #
+                # This avoids the abnormal behavior we saw
+                # at the previous destination.
+
+                print(
+                    "Leaving vehicle control to BeamNG "
+                    "at destination."
+                )
+
+                print()
+                break
+
+        except KeyboardInterrupt:
+
+            print()
+            print("=" * 60)
+            print("MANUAL STOP")
+            print("=" * 60)
+
+            print()
+            print("Experiment interrupted by user.")
+
+            # Do NOT mess with parking brake here.
+            # Simply stop monitoring.
 
             break
 
+        except Exception as e:
 
-        previous_pos = current_pos
-
-
-except KeyboardInterrupt:
-
-    print("\nExperiment manually stopped.")
+            print()
+            print("Monitoring error:")
+            print(e)
+            print()
 
 
 # ============================================================
-# STOP VEHICLE
+# RUN
 # ============================================================
 
-print("\nStopping vehicle...")
+if __name__ == "__main__":
 
-bng.call(
-    "inject_input",
-    {
-        "event": "throttle",
-        "value": 0
-    }
-)
-
-bng.call(
-    "inject_input",
-    {
-        "event": "brake",
-        "value": 1
-    }
-)
-
-bng.call(
-    "inject_input",
-    {
-        "event": "steering",
-        "value": 0
-    }
-)
-
-print("Done.")
+    main()
