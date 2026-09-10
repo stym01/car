@@ -3,8 +3,7 @@ import json
 import math
 import random
 import time
-import csv
-import os
+import heapq
 import sys
 
 
@@ -14,49 +13,29 @@ import sys
 
 MCP_URL = "http://127.0.0.1:29292/mcp"
 
-# ------------------------------------------------------------
-# EXPERIMENT
-# ------------------------------------------------------------
+# Minimum ACTUAL ROAD distance
+MIN_ROUTE_DISTANCE_M = 5000.0
 
-MIN_DISTANCE_M = 5000.0
-
-# 80 mph
+# Maximum driving speed = 80 mph
 MAX_SPEED_MPS = 80.0 * 0.44704
 
-# Consider B reached within this distance
+# Destination arrival radius
 ARRIVAL_DISTANCE_M = 15.0
 
-# How long to wait after teleporting
-TELEPORT_SETTLE_TIME = 2.0
-
-# How often to check vehicle
-MONITOR_INTERVAL = 1.0
+# Time between position checks
+CHECK_INTERVAL = 1.0
 
 # Number of trips
 NUMBER_OF_TRIPS = 1
 
-# ------------------------------------------------------------
-# NAVGRAPH
-# ------------------------------------------------------------
-
-# Maximum number of nodes requested from MCP
+# Maximum navgraph nodes
 MAX_NAV_NODES = 100000
 
-# Don't select tiny/unusable roads
-MIN_NODE_DRIVABILITY = 0.3
+# Only use reasonably drivable roads
+MIN_DRIVABILITY = 0.3
 
-# Random seed
-# Set to None for different experiments every run.
-RANDOM_SEED = None
-
-
-# ============================================================
-# RANDOM
-# ============================================================
-
-if RANDOM_SEED is not None:
-    random.seed(RANDOM_SEED)
-
+# How many attempts to find Point A
+MAX_A_ATTEMPTS = 100
 
 # ============================================================
 # MCP
@@ -86,7 +65,7 @@ def call_mcp(tool_name, arguments):
         response = requests.post(
             MCP_URL,
             json=payload,
-            timeout=30
+            timeout=60
         )
 
         response.raise_for_status()
@@ -100,10 +79,7 @@ def call_mcp(tool_name, arguments):
         print("ERROR: MCP SERVER NOT REACHABLE")
         print("=" * 60)
         print()
-        print("Expected:")
         print(MCP_URL)
-        print()
-        print("Check BeamNG + MCP server.")
         print()
 
         sys.exit(1)
@@ -111,15 +87,14 @@ def call_mcp(tool_name, arguments):
     except Exception as e:
 
         print(
-            f"MCP error while calling "
-            f"{tool_name}: {e}"
+            f"MCP error [{tool_name}]: {e}"
         )
 
         return None
 
 
 # ============================================================
-# MCP TEXT EXTRACTION
+# EXTRACT MCP TEXT
 # ============================================================
 
 def extract_text(response):
@@ -155,12 +130,10 @@ def extract_json(response):
         return None
 
     try:
+
         return json.loads(text)
 
     except Exception:
-
-        # Sometimes MCP output may contain
-        # extra text around JSON.
 
         try:
 
@@ -180,39 +153,6 @@ def extract_json(response):
 
 
 # ============================================================
-# GET VEHICLE POSITION
-# ============================================================
-
-def get_position():
-
-    response = call_mcp(
-        "get_position",
-        {}
-    )
-
-    data = extract_json(response)
-
-    if not data:
-        return None
-
-    return data.get("pos")
-
-
-# ============================================================
-# GET VEHICLE STATUS
-# ============================================================
-
-def get_status():
-
-    response = call_mcp(
-        "get_status",
-        {}
-    )
-
-    return extract_json(response)
-
-
-# ============================================================
 # GET NAVGRAPH
 # ============================================================
 
@@ -220,7 +160,7 @@ def get_navgraph():
 
     print()
     print("=" * 60)
-    print("LOADING BEAMNG NAVGRAPH")
+    print("LOADING COMPLETE BEAMNG NAVGRAPH")
     print("=" * 60)
     print()
 
@@ -234,15 +174,12 @@ def get_navgraph():
 
     data = extract_json(response)
 
-    if not data:
+    if data is None:
 
-        print(
-            "Could not parse navgraph."
-        )
-
+        print("Could not parse navgraph.")
         print(response)
 
-        return None
+        sys.exit(1)
 
     return data
 
@@ -253,328 +190,440 @@ def get_navgraph():
 
 def extract_nodes(navgraph):
 
-    """
-    MCP versions may return the graph using
-    slightly different JSON wrappers.
-
-    Try common structures.
-    """
-
     if not isinstance(navgraph, dict):
         return []
 
-    # Direct nodes
-    if isinstance(
-        navgraph.get("nodes"),
-        list
-    ):
-        return navgraph["nodes"]
+    nodes = navgraph.get("nodes")
 
-    # graph.nodes
+    if isinstance(nodes, list):
+        return nodes
+
     graph = navgraph.get("graph")
 
     if isinstance(graph, dict):
 
-        if isinstance(
-            graph.get("nodes"),
-            list
-        ):
-            return graph["nodes"]
+        nodes = graph.get("nodes")
 
-    # result.nodes
+        if isinstance(nodes, list):
+            return nodes
+
     result = navgraph.get("result")
 
     if isinstance(result, dict):
 
-        if isinstance(
-            result.get("nodes"),
-            list
-        ):
-            return result["nodes"]
+        nodes = result.get("nodes")
+
+        if isinstance(nodes, list):
+            return nodes
 
     return []
 
 
 # ============================================================
-# NODE POSITION
+# CONVERT NODE
 # ============================================================
 
-def node_position(node):
+def convert_node(node):
 
     if not isinstance(node, dict):
         return None
 
-    # Most likely:
-    # {"pos":{"x":...,"y":...,"z":...}}
+    name = node.get("name")
+
+    if name is None:
+        return None
 
     pos = node.get("pos")
 
-    if isinstance(pos, dict):
-
-        if all(
-            k in pos
-            for k in ("x", "y", "z")
-        ):
-            return {
-                "x": float(pos["x"]),
-                "y": float(pos["y"]),
-                "z": float(pos["z"])
-            }
-
-    # Some representations may use
-    # x/y/z directly.
-
-    if all(
-        k in node
-        for k in ("x", "y", "z")
-    ):
-
-        return {
-            "x": float(node["x"]),
-            "y": float(node["y"]),
-            "z": float(node["z"])
-        }
-
-    return None
-
-
-# ============================================================
-# NODE ID
-# ============================================================
-
-def node_id(node):
-
-    if not isinstance(node, dict):
+    if not isinstance(pos, dict):
         return None
 
-    for key in (
-        "id",
-        "name",
-        "node",
-        "nodeId"
-    ):
+    try:
 
-        if key in node:
+        x = float(pos["x"])
+        y = float(pos["y"])
+        z = float(pos["z"])
 
-            return node[key]
+    except Exception:
 
-    return None
+        return None
 
-
-# ============================================================
-# DISTANCE
-# ============================================================
-
-def distance(a, b):
-
-    dx = a["x"] - b["x"]
-    dy = a["y"] - b["y"]
-    dz = a["z"] - b["z"]
-
-    return math.sqrt(
-        dx * dx +
-        dy * dy +
-        dz * dz
+    drivability = node.get(
+        "drivability",
+        1.0
     )
 
+    try:
 
-# ============================================================
-# FILTER ROAD NODES
-# ============================================================
-
-def valid_nodes(nodes):
-
-    valid = []
-
-    for node in nodes:
-
-        pos = node_position(node)
-
-        if pos is None:
-            continue
-
-        # ----------------------------------------------------
-        # Drivability
-        # ----------------------------------------------------
-
-        drivability = node.get(
-            "drivability",
-            1.0
+        drivability = float(
+            drivability
         )
 
-        try:
-            drivability = float(
-                drivability
-            )
-        except Exception:
-            drivability = 1.0
+    except Exception:
+
+        drivability = 1.0
+
+    return {
+        "name": name,
+        "pos": {
+            "x": x,
+            "y": y,
+            "z": z
+        },
+        "drivability": drivability,
+        "links": node.get(
+            "links",
+            []
+        )
+    }
+
+
+# ============================================================
+# BUILD NODE DICTIONARY
+# ============================================================
+
+def build_nodes(raw_nodes):
+
+    nodes = {}
+
+    for raw in raw_nodes:
+
+        node = convert_node(raw)
+
+        if node is None:
+            continue
 
         if (
-            drivability <
-            MIN_NODE_DRIVABILITY
+            node["drivability"]
+            < MIN_DRIVABILITY
         ):
             continue
 
-        # ----------------------------------------------------
-        # Need an ID
-        # ----------------------------------------------------
+        nodes[node["name"]] = node
 
-        nid = node_id(node)
+    return nodes
 
-        if nid is None:
+
+# ============================================================
+# BUILD ROAD GRAPH
+# ============================================================
+
+def build_graph(nodes):
+
+    graph = {}
+
+    for name, node in nodes.items():
+
+        graph[name] = []
+
+        links = node.get(
+            "links",
+            []
+        )
+
+        if not isinstance(
+            links,
+            list
+        ):
             continue
 
-        valid.append(
-            {
-                "id": nid,
-                "pos": pos,
-                "raw": node
-            }
-        )
+        for link in links:
 
-    return valid
+            if not isinstance(
+                link,
+                dict
+            ):
+                continue
 
-
-# ============================================================
-# RANDOM POINT A
-# ============================================================
-
-def choose_point_a(nodes):
-
-    return random.choice(nodes)
-
-
-# ============================================================
-# RANDOM POINT B
-# ============================================================
-
-def choose_point_b(nodes, point_a):
-
-    """
-    Pick a random road node at least 5 km
-    from Point A.
-    """
-
-    # Try many random candidates first.
-
-    for _ in range(1000):
-
-        candidate = random.choice(
-            nodes
-        )
-
-        d = distance(
-            point_a["pos"],
-            candidate["pos"]
-        )
-
-        if d >= MIN_DISTANCE_M:
-
-            return candidate
-
-    # --------------------------------------------------------
-    # Fallback:
-    # Search all nodes.
-    # --------------------------------------------------------
-
-    print(
-        "Random search unsuccessful."
-    )
-
-    print(
-        "Searching entire navgraph..."
-    )
-
-    candidates = []
-
-    for candidate in nodes:
-
-        d = distance(
-            point_a["pos"],
-            candidate["pos"]
-        )
-
-        if d >= MIN_DISTANCE_M:
-
-            candidates.append(
-                candidate
+            target = link.get(
+                "to"
             )
 
-    if not candidates:
+            if target not in nodes:
+                continue
 
-        return None
+            try:
 
-    return random.choice(
-        candidates
+                length = float(
+                    link.get(
+                        "len",
+                        0
+                    )
+                )
+
+            except Exception:
+
+                continue
+
+            if length <= 0:
+                continue
+
+            try:
+
+                drivability = float(
+                    link.get(
+                        "drivability",
+                        1.0
+                    )
+                )
+
+            except Exception:
+
+                drivability = 1.0
+
+            if (
+                drivability
+                < MIN_DRIVABILITY
+            ):
+                continue
+
+            graph[name].append(
+                (
+                    target,
+                    length
+                )
+            )
+
+    return graph
+
+
+# ============================================================
+# DIJKSTRA
+# ============================================================
+
+def dijkstra(
+    graph,
+    start,
+    minimum_distance=5000.0
+):
+
+    """
+    Calculate shortest road distance from start.
+
+    We stop exploring once nodes are more than
+    minimum_distance away.
+
+    Returns:
+        distances
+    """
+
+    distances = {
+        start: 0.0
+    }
+
+    heap = [
+        (0.0, start)
+    ]
+
+    while heap:
+
+        current_distance, current = (
+            heapq.heappop(heap)
+        )
+
+        if (
+            current_distance
+            != distances.get(
+                current,
+                float("inf")
+            )
+        ):
+            continue
+
+        for neighbor, edge_length in graph.get(
+            current,
+            []
+        ):
+
+            new_distance = (
+                current_distance
+                + edge_length
+            )
+
+            if (
+                new_distance
+                > minimum_distance
+            ):
+                continue
+
+            old_distance = distances.get(
+                neighbor,
+                float("inf")
+            )
+
+            if new_distance < old_distance:
+
+                distances[neighbor] = (
+                    new_distance
+                )
+
+                heapq.heappush(
+                    heap,
+                    (
+                        new_distance,
+                        neighbor
+                    )
+                )
+
+    return distances
+
+
+# ============================================================
+# FIND POINT A AND B
+# ============================================================
+
+def choose_a_b(
+    nodes,
+    graph
+):
+
+    node_names = list(
+        graph.keys()
     )
+
+    if len(node_names) < 2:
+
+        print(
+            "Not enough connected nodes."
+        )
+
+        return None, None, None
+
+    print()
+    print(
+        "Searching for A → B with "
+        "actual road distance >= 5 km..."
+    )
+
+    for attempt in range(
+        1,
+        MAX_A_ATTEMPTS + 1
+    ):
+
+        a_name = random.choice(
+            node_names
+        )
+
+        distances = dijkstra(
+            graph,
+            a_name,
+            MIN_ROUTE_DISTANCE_M
+        )
+
+        # Nodes that can actually be reached
+        # by at least 5 km of road.
+
+        candidates = [
+            (
+                name,
+                dist
+            )
+
+            for name, dist
+            in distances.items()
+
+            if (
+                dist >=
+                MIN_ROUTE_DISTANCE_M
+            )
+        ]
+
+        if not candidates:
+            continue
+
+        b_name, route_distance = (
+            random.choice(
+                candidates
+            )
+        )
+
+        return (
+            nodes[a_name],
+            nodes[b_name],
+            route_distance
+        )
+
+    return None, None, None
 
 
 # ============================================================
 # TELEPORT
 # ============================================================
 
-def teleport_to(point):
+def teleport_to(position):
 
     print()
-    print("Teleporting vehicle to:")
+    print("=" * 60)
+    print("TELEPORTING TO POINT A")
+    print("=" * 60)
+
+    print()
+
     print(
-        f"X = {point['x']:.2f}"
+        f"X = {position['x']:.3f}"
     )
+
     print(
-        f"Y = {point['y']:.2f}"
+        f"Y = {position['y']:.3f}"
     )
+
     print(
-        f"Z = {point['z']:.2f}"
+        f"Z = {position['z']:.3f}"
     )
 
     response = call_mcp(
         "set_position",
         {
-            "pos": point
+            "pos": position
         }
     )
 
-    text = extract_text(response)
+    text = extract_text(
+        response
+    )
 
     if text:
+        print()
         print(
             "Teleport response:",
             text
         )
 
-    time.sleep(
-        TELEPORT_SETTLE_TIME
-    )
+    # Give physics time to settle.
+    time.sleep(3)
 
 
 # ============================================================
-# START DRIVE
+# START DRIVING
 # ============================================================
 
-def start_drive(point_b):
+def drive_to(position):
 
     print()
     print("=" * 60)
-    print("STARTING DRIVE")
+    print("STARTING A → B DRIVE")
     print("=" * 60)
 
     print()
+
     print(
-        "Maximum speed: "
-        f"{MAX_SPEED_MPS:.2f} m/s "
-        "(80 mph)"
+        "Maximum speed : 80 mph"
     )
 
     print(
-        "Aggression: NOT USED"
+        "Speed mode    : LIMIT"
     )
 
     print(
-        "Lane following: ON"
+        "Lane keeping  : ON"
     )
 
     print(
-        "Traffic avoidance: ON"
+        "Avoid cars    : ON"
+    )
+
+    print(
+        "Aggression    : NOT USED"
     )
 
     print()
@@ -582,9 +631,8 @@ def start_drive(point_b):
     response = call_mcp(
         "drive_to",
         {
-            "pos": point_b,
+            "pos": position,
 
-            # 80 mph is a LIMIT.
             "routeSpeed":
                 MAX_SPEED_MPS,
 
@@ -599,11 +647,13 @@ def start_drive(point_b):
         }
     )
 
-    text = extract_text(response)
+    text = extract_text(
+        response
+    )
 
     if text:
         print(
-            "Drive command:",
+            "Drive response:",
             text
         )
 
@@ -611,10 +661,33 @@ def start_drive(point_b):
 
 
 # ============================================================
-# CHECK INSTABILITY
+# GET POSITION
 # ============================================================
 
-def check_instability():
+def get_position():
+
+    response = call_mcp(
+        "get_position",
+        {}
+    )
+
+    data = extract_json(
+        response
+    )
+
+    if not data:
+        return None
+
+    return data.get(
+        "pos"
+    )
+
+
+# ============================================================
+# GET INSTABILITY
+# ============================================================
+
+def get_instability():
 
     response = call_mcp(
         "get_instability",
@@ -623,170 +696,181 @@ def check_instability():
         }
     )
 
-    data = extract_json(response)
+    data = extract_json(
+        response
+    )
 
     if not data:
         return 0
 
-    return int(
-        data.get(
-            "count",
-            0
+    try:
+
+        return int(
+            data.get(
+                "count",
+                0
+            )
         )
+
+    except Exception:
+
+        return 0
+
+
+# ============================================================
+# DISTANCE
+# ============================================================
+
+def euclidean_distance(a, b):
+
+    dx = (
+        a["x"]
+        - b["x"]
+    )
+
+    dy = (
+        a["y"]
+        - b["y"]
+    )
+
+    dz = (
+        a["z"]
+        - b["z"]
+    )
+
+    return math.sqrt(
+        dx * dx
+        + dy * dy
+        + dz * dz
     )
 
 
 # ============================================================
-# MONITOR DRIVE
+# MONITOR
 # ============================================================
 
-def monitor_drive(point_b):
+def monitor_drive(
+    point_b,
+    route_distance
+):
 
     print()
     print("=" * 60)
     print("MONITORING DRIVE")
     print("=" * 60)
+
     print()
 
-    previous_distance = None
+    print(
+        f"Planned road distance: "
+        f"{route_distance / 1000:.2f} km"
+    )
+
+    print()
 
     while True:
 
         time.sleep(
-            MONITOR_INTERVAL
+            CHECK_INTERVAL
         )
-
-        # ----------------------------------------------------
-        # Position
-        # ----------------------------------------------------
 
         position = get_position()
 
         if position is None:
 
             print(
-                "Could not read position."
+                "Position unavailable."
             )
 
             continue
 
-        current_distance = distance(
-            position,
-            point_b
+        remaining = (
+            euclidean_distance(
+                position,
+                point_b
+            )
         )
 
-        # ----------------------------------------------------
-        # Status
-        # ----------------------------------------------------
+        instability = (
+            get_instability()
+        )
 
-        status = get_status()
+        line = (
+            f"Distance to B: "
+            f"{remaining:8.1f} m"
+        )
 
-        speed = None
+        if instability > 0:
 
-        if isinstance(status, dict):
-
-            # Try several possible locations.
-
-            speed = status.get(
-                "speed"
+            line += (
+                f" | INSTABILITY: "
+                f"{instability}"
             )
 
-            if speed is None:
-
-                vehicle = status.get(
-                    "vehicle"
-                )
-
-                if isinstance(
-                    vehicle,
-                    dict
-                ):
-
-                    speed = vehicle.get(
-                        "speed"
-                    )
+        print(line)
 
         # ----------------------------------------------------
         # Instability
         # ----------------------------------------------------
 
-        instability = (
-            check_instability()
-        )
-
-        # ----------------------------------------------------
-        # Print
-        # ----------------------------------------------------
-
-        output = (
-            f"Distance to B: "
-            f"{current_distance:8.1f} m"
-        )
-
-        if isinstance(
-            speed,
-            (int, float)
-        ):
-
-            output += (
-                f" | Speed: "
-                f"{speed * 2.23694:5.1f} mph"
-            )
-
-        if instability > 0:
-
-            output += (
-                f" | INSTABILITY: "
-                f"{instability}"
-            )
-
-        print(output)
-
-        # ----------------------------------------------------
-        # Crash / instability
-        # ----------------------------------------------------
-
         if instability > 0:
 
             print()
-            print("=" * 60)
-            print("INSTABILITY DETECTED")
-            print("=" * 60)
+            print(
+                "=" * 60
+            )
+
+            print(
+                "INSTABILITY DETECTED"
+            )
+
+            print(
+                "=" * 60
+            )
 
             return False
 
         # ----------------------------------------------------
-        # Destination
+        # Arrival
         # ----------------------------------------------------
 
-        if current_distance <= ARRIVAL_DISTANCE_M:
-
-            print()
-            print("=" * 60)
-            print("DESTINATION REACHED")
-            print("=" * 60)
+        if (
+            remaining
+            <= ARRIVAL_DISTANCE_M
+        ):
 
             print()
             print(
+                "=" * 60
+            )
+
+            print(
+                "DESTINATION REACHED"
+            )
+
+            print(
+                "=" * 60
+            )
+
+            print()
+
+            print(
                 f"Final distance: "
-                f"{current_distance:.2f} m"
+                f"{remaining:.2f} m"
             )
 
             return True
 
-        previous_distance = (
-            current_distance
-        )
-
 
 # ============================================================
-# SAVE EXPERIMENT INFORMATION
+# SAVE METADATA
 # ============================================================
 
-def save_trip_metadata(
+def save_metadata(
     trip_number,
     point_a,
     point_b,
+    route_distance,
     success
 ):
 
@@ -796,26 +880,26 @@ def save_trip_metadata(
 
     data = {
 
-        "trip": trip_number,
+        "trip":
+            trip_number,
 
-        "point_a": point_a,
+        "point_a":
+            point_a,
 
-        "point_b": point_b,
+        "point_b":
+            point_b,
 
-        "straight_line_distance_m":
-            distance(
-                point_a,
-                point_b
-            ),
+        "planned_route_distance_m":
+            route_distance,
 
-        "max_speed_mps":
-            MAX_SPEED_MPS,
+        "planned_route_distance_km":
+            route_distance / 1000.0,
 
-        "max_speed_mph":
+        "minimum_route_distance_m":
+            MIN_ROUTE_DISTANCE_M,
+
+        "maximum_speed_mph":
             80.0,
-
-        "minimum_distance_m":
-            MIN_DISTANCE_M,
 
         "success":
             success,
@@ -838,143 +922,10 @@ def save_trip_metadata(
             indent=2
         )
 
+    print()
     print(
         f"Metadata saved: {filename}"
     )
-
-
-# ============================================================
-# ONE TRIP
-# ============================================================
-
-def run_trip(
-    trip_number,
-    nodes
-):
-
-    print()
-    print()
-    print("#" * 60)
-    print(
-        f"                 TRIP {trip_number}"
-    )
-    print("#" * 60)
-
-    # --------------------------------------------------------
-    # A
-    # --------------------------------------------------------
-
-    point_a_node = choose_point_a(
-        nodes
-    )
-
-    point_a = point_a_node["pos"]
-
-    print()
-    print("POINT A")
-    print(
-        f"X = {point_a['x']:.2f}"
-    )
-    print(
-        f"Y = {point_a['y']:.2f}"
-    )
-    print(
-        f"Z = {point_a['z']:.2f}"
-    )
-
-    # --------------------------------------------------------
-    # B
-    # --------------------------------------------------------
-
-    point_b_node = choose_point_b(
-        nodes,
-        point_a_node
-    )
-
-    if point_b_node is None:
-
-        print(
-            "Could not find Point B "
-            "at least 5 km away."
-        )
-
-        return False
-
-    point_b = point_b_node["pos"]
-
-    # --------------------------------------------------------
-    # Distance
-    # --------------------------------------------------------
-
-    d = distance(
-        point_a,
-        point_b
-    )
-
-    print()
-    print("POINT B")
-    print(
-        f"X = {point_b['x']:.2f}"
-    )
-    print(
-        f"Y = {point_b['y']:.2f}"
-    )
-    print(
-        f"Z = {point_b['z']:.2f}"
-    )
-
-    print()
-    print(
-        f"A → B straight distance: "
-        f"{d / 1000:.2f} km"
-    )
-
-    # Safety check
-
-    if d < MIN_DISTANCE_M:
-
-        print(
-            "ERROR: distance requirement failed."
-        )
-
-        return False
-
-    # --------------------------------------------------------
-    # Teleport
-    # --------------------------------------------------------
-
-    teleport_to(
-        point_a
-    )
-
-    # --------------------------------------------------------
-    # Start drive
-    # --------------------------------------------------------
-
-    start_drive(
-        point_b
-    )
-
-    # --------------------------------------------------------
-    # Monitor
-    # --------------------------------------------------------
-
-    success = monitor_drive(
-        point_b
-    )
-
-    # --------------------------------------------------------
-    # Metadata
-    # --------------------------------------------------------
-
-    save_trip_metadata(
-        trip_number,
-        point_a,
-        point_b,
-        success
-    )
-
-    return success
 
 
 # ============================================================
@@ -985,75 +936,59 @@ def main():
 
     print()
     print("=" * 60)
-    print("       BEAMNG AUTOMATIC DATA COLLECTION")
+    print(
+        "       BEAMNG AUTOMATIC DATA COLLECTION"
+    )
     print("=" * 60)
 
     print()
-    print("Configuration:")
+
     print(
-        f"Minimum distance : "
-        f"{MIN_DISTANCE_M / 1000:.1f} km"
+        "Minimum ROAD distance : "
+        "5.0 km"
     )
 
     print(
-        f"Maximum speed    : "
-        f"80 mph"
+        "Maximum speed          : "
+        "80 mph"
     )
 
     print(
-        f"Trips            : "
-        f"{NUMBER_OF_TRIPS}"
-    )
-
-    print(
-        "Aggression       : "
+        "Aggression             : "
         "NOT USED"
     )
 
+    print()
+
     # --------------------------------------------------------
-    # Get navgraph
+    # NAVGRAPH
     # --------------------------------------------------------
 
     navgraph = get_navgraph()
 
-    if navgraph is None:
-
-        print(
-            "Failed to get navgraph."
-        )
-
-        return
-
-    nodes_raw = extract_nodes(
+    raw_nodes = extract_nodes(
         navgraph
     )
 
-    print()
     print(
         f"Raw navgraph nodes: "
-        f"{len(nodes_raw)}"
+        f"{len(raw_nodes)}"
     )
 
-    if not nodes_raw:
-
-        print()
-        print(
-            "No nodes were returned."
-        )
+    if not raw_nodes:
 
         print(
-            "Try running get_navgraph "
-            "manually and inspect its output."
+            "No navgraph nodes found."
         )
 
         return
 
     # --------------------------------------------------------
-    # Valid nodes
+    # NODES
     # --------------------------------------------------------
 
-    nodes = valid_nodes(
-        nodes_raw
+    nodes = build_nodes(
+        raw_nodes
     )
 
     print(
@@ -1061,10 +996,28 @@ def main():
         f"{len(nodes)}"
     )
 
-    if len(nodes) < 2:
+    # --------------------------------------------------------
+    # GRAPH
+    # --------------------------------------------------------
+
+    graph = build_graph(
+        nodes
+    )
+
+    edge_count = sum(
+        len(v)
+        for v in graph.values()
+    )
+
+    print(
+        f"Usable road links: "
+        f"{edge_count}"
+    )
+
+    if edge_count == 0:
 
         print(
-            "Not enough usable road nodes."
+            "No usable road links found."
         )
 
         return
@@ -1072,7 +1025,7 @@ def main():
     print()
 
     # --------------------------------------------------------
-    # Trips
+    # TRIPS
     # --------------------------------------------------------
 
     successful = 0
@@ -1083,40 +1036,157 @@ def main():
         NUMBER_OF_TRIPS + 1
     ):
 
-        try:
+        print()
+        print(
+            "#" * 60
+        )
 
-            success = run_trip(
-                trip,
-                nodes
+        print(
+            f"                     TRIP {trip}"
+        )
+
+        print(
+            "#" * 60
+        )
+
+        # ----------------------------------------------------
+        # SELECT A/B
+        # ----------------------------------------------------
+
+        point_a_node, point_b_node, route_distance = (
+            choose_a_b(
+                nodes,
+                graph
             )
+        )
 
-            if success:
-                successful += 1
-            else:
-                failed += 1
-
-        except KeyboardInterrupt:
+        if point_a_node is None:
 
             print()
             print(
-                "Experiment interrupted."
+                "Could not find an A → B pair "
+                "with >= 5 km road distance."
             )
-
-            break
-
-        except Exception as e:
 
             print()
-            print(
-                f"Trip {trip} failed:"
-            )
 
-            print(e)
+            print(
+                "This means the currently loaded "
+                "road network may have no connected "
+                "route longer than 5 km."
+            )
 
             failed += 1
 
+            continue
+
+        point_a = point_a_node["pos"]
+        point_b = point_b_node["pos"]
+
+        # ----------------------------------------------------
+        # PRINT A
+        # ----------------------------------------------------
+
+        print()
+        print("POINT A")
+
+        print(
+            f"Node: {point_a_node['name']}"
+        )
+
+        print(
+            f"X = {point_a['x']:.3f}"
+        )
+
+        print(
+            f"Y = {point_a['y']:.3f}"
+        )
+
+        print(
+            f"Z = {point_a['z']:.3f}"
+        )
+
+        # ----------------------------------------------------
+        # PRINT B
+        # ----------------------------------------------------
+
+        print()
+        print("POINT B")
+
+        print(
+            f"Node: {point_b_node['name']}"
+        )
+
+        print(
+            f"X = {point_b['x']:.3f}"
+        )
+
+        print(
+            f"Y = {point_b['y']:.3f}"
+        )
+
+        print(
+            f"Z = {point_b['z']:.3f}"
+        )
+
+        print()
+
+        print(
+            "ACTUAL ROAD DISTANCE:"
+        )
+
+        print(
+            f"{route_distance:.2f} m"
+        )
+
+        print(
+            f"{route_distance / 1000:.2f} km"
+        )
+
+        # ----------------------------------------------------
+        # TELEPORT
+        # ----------------------------------------------------
+
+        teleport_to(
+            point_a
+        )
+
+        # ----------------------------------------------------
+        # DRIVE
+        # ----------------------------------------------------
+
+        drive_to(
+            point_b
+        )
+
+        # ----------------------------------------------------
+        # MONITOR
+        # ----------------------------------------------------
+
+        success = monitor_drive(
+            point_b,
+            route_distance
+        )
+
+        # ----------------------------------------------------
+        # SAVE
+        # ----------------------------------------------------
+
+        save_metadata(
+            trip,
+            point_a,
+            point_b,
+            route_distance,
+            success
+        )
+
+        if success:
+            successful += 1
+        else:
+            failed += 1
+
     # --------------------------------------------------------
-    # Summary
+    # SUMMARY
     # --------------------------------------------------------
 
     print()
@@ -1125,6 +1195,7 @@ def main():
     print("=" * 60)
 
     print()
+
     print(
         f"Successful trips: "
         f"{successful}"
@@ -1138,8 +1209,12 @@ def main():
     print()
 
     print(
-        "Telemetry should be available "
-        "in telemetry.csv."
+        "Remember:"
+    )
+
+    print(
+        "Run collect_data.py separately "
+        "to record telemetry."
     )
 
     print()
@@ -1150,4 +1225,5 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
