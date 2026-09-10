@@ -14,8 +14,7 @@ import sys
 MCP_URL = "http://127.0.0.1:29292/mcp"
 
 # Minimum ACTUAL ROAD distance
-MIN_ROUTE_DISTANCE_M = 5000.0
-
+MIN_ROUTE_DISTANCE_M = 2000.0
 # Maximum driving speed = 80 mph
 MAX_SPEED_MPS = 80.0 * 0.44704
 
