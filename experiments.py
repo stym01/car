@@ -1223,6 +1223,123 @@ def main():
 # RUN
 # ============================================================
 
+def diagnose_graph(nodes, graph):
+
+    print()
+    print("=" * 60)
+    print("NAVGRAPH DIAGNOSTIC")
+    print("=" * 60)
+
+    print("Nodes:", len(nodes))
+
+    edge_count = sum(
+        len(v) for v in graph.values()
+    )
+
+    print("Edges:", edge_count)
+
+    if edge_count == 0:
+        print()
+        print("PROBLEM: ZERO EDGES")
+        print("Our link parser is wrong.")
+        return
+
+    # Pick a node that actually has outgoing links
+    starts = [
+        n for n in graph
+        if len(graph[n]) > 0
+    ]
+
+    print(
+        "Nodes with outgoing links:",
+        len(starts)
+    )
+
+    start = random.choice(starts)
+
+    print()
+    print("Testing node:")
+    print(start)
+
+    distances = dijkstra(
+        graph,
+        start,
+        10000.0
+    )
+
+    print()
+    print(
+        "Reachable nodes within 10 km:",
+        len(distances)
+    )
+
+    if distances:
+
+        maximum = max(
+            distances.values()
+        )
+
+        print(
+            "Maximum explored road distance:",
+            maximum,
+            "m"
+        )
+
+        farthest = max(
+            distances,
+            key=distances.get
+        )
+
+        print(
+            "Farthest node:",
+            farthest
+        )
+
+        print()
+
+        for threshold in [
+            100,
+            500,
+            1000,
+            1500,
+            2000,
+            3000,
+            5000
+        ]:
+
+            count = sum(
+                1
+                for d in distances.values()
+                if d >= threshold
+            )
+
+            print(
+                f">= {threshold:4} m:",
+                count,
+                "nodes"
+            )
+
 if __name__ == "__main__":
+
+    if __name__ == "__main__":
+
+    navgraph = get_navgraph()
+
+    raw_nodes = extract_nodes(
+        navgraph
+    )
+
+    nodes = build_nodes(
+        raw_nodes
+    )
+
+    graph = build_graph(
+        nodes
+    )
+
+    diagnose_graph(
+        nodes,
+        graph
+    )
 
     main()
