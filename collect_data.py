@@ -528,7 +528,6 @@ FIELDS = [
 # ============================================================
 # CREATE CSV ROW
 # ============================================================
-
 def build_row(
     motion,
     gauge,
@@ -541,9 +540,9 @@ def build_row(
         for field in FIELDS
     }
 
-    # --------------------------------------------------------
-    # Time
-    # --------------------------------------------------------
+    # ========================================================
+    # TIME
+    # ========================================================
 
     row["t_s"] = (
         time.perf_counter()
@@ -552,28 +551,23 @@ def build_row(
 
     row["seq"] = sequence
 
-    # --------------------------------------------------------
-    # Motion data
-    # --------------------------------------------------------
+    # ========================================================
+    # MOTION DATA
+    # ========================================================
 
     if motion is not None:
 
         for key in [
-
             "x_m",
             "y_m",
             "z_m",
-
             "vx_mps",
             "vy_mps",
             "vz_mps",
-
             "speed_mps",
-
             "ax_mps2",
             "ay_mps2",
             "az_mps2",
-
             "dir_x",
             "dir_y",
             "dir_z"
@@ -583,68 +577,55 @@ def build_row(
 
                 row[key] = motion[key]
 
-    # --------------------------------------------------------
-    # OutGauge data
-    # --------------------------------------------------------
+    # ========================================================
+    # OUTGAUGE DATA
+    # ========================================================
 
     if gauge is not None:
 
-        for key in [
+        if "gear_index" in gauge:
+            row["gear_index"] = gauge["gear_index"]
 
-            "gear_index",
-            "rpm",
-            "speed_mps",
-            "coolant_c",
-            "fuel",
-            "oil_pressure",
-            "oil_c",
-            "throttle",
-            "brake",
-            "clutch"
-        ]:
+        if "rpm" in gauge:
+            row["rpm"] = gauge["rpm"]
 
-            if key in gauge:
+        if "speed_mps" in gauge:
 
-                if key == "fuel":
+            # Use OutGauge speed only if MotionSim
+            # speed isn't available.
+            if math.isnan(row["speed_mps"]):
+                row["speed_mps"] = gauge["speed_mps"]
 
-                    row[
-                        "fuel_volume_l"
-                    ] = gauge[key]
+        if "coolant_c" in gauge:
+            row["coolant_c"] = gauge["coolant_c"]
 
-                else:
+        if "fuel" in gauge:
+            row["fuel_volume_l"] = gauge["fuel"]
 
-                    row[key] = gauge[key]
+        if "oil_c" in gauge:
+            row["oil_c"] = gauge["oil_c"]
 
-    # --------------------------------------------------------
-    # Engine angular velocity
-    #
-    # rpm → rad/s
-    # --------------------------------------------------------
+        if "throttle" in gauge:
+            row["throttle"] = gauge["throttle"]
 
-    if not math.isnan(
-        row["rpm"]
-    ):
+        if "brake" in gauge:
+            row["brake"] = gauge["brake"]
 
-        row[
-            "engine_av_rads"
-        ] = (
+        if "clutch" in gauge:
+            row["clutch_ratio"] = gauge["clutch"]
+
+    # ========================================================
+    # ENGINE ANGULAR VELOCITY
+    # ========================================================
+
+    if not math.isnan(row["rpm"]):
+
+        row["engine_av_rads"] = (
             row["rpm"]
             * 2.0
             * math.pi
             / 60.0
         )
-
-    # --------------------------------------------------------
-    # Clutch
-    # --------------------------------------------------------
-
-    if not math.isnan(
-        row["clutch"]
-    ):
-
-        row[
-            "clutch_ratio"
-        ] = row["clutch"]
 
     return row
 
