@@ -77,7 +77,6 @@ def motion_listener():
 # -----------------------------
 # OutGauge
 # -----------------------------
-
 def outgauge_listener():
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -108,14 +107,12 @@ def outgauge_listener():
                 "oil_pressure": values[10],
                 "oil_temp": values[11],
 
-                "throttle": values[18],
-                "brake": values[19],
-                "clutch": values[20],
+                "throttle": values[16],
+                "brake": values[17],
+                "clutch": values[18],
 
                 "gear": values[3],
             })
-
-
 # -----------------------------
 # CSV writer
 # -----------------------------
