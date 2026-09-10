@@ -471,79 +471,161 @@ def dijkstra(
 # FIND POINT A AND B
 # ============================================================
 
-def choose_a_b(
-    nodes,
-    graph
-):
-
-    node_names = list(
-        graph.keys()
-    )
-
-    if len(node_names) < 2:
-
-        print(
-            "Not enough connected nodes."
-        )
-
-        return None, None, None
+def choose_a_b(nodes, graph):
 
     print()
     print(
         "Searching for A → B with "
-        "actual road distance >= 5 km..."
+        "actual road distance >= "
+        f"{MIN_ROUTE_DISTANCE_M / 1000:.1f} km..."
     )
 
-    for attempt in range(
-        1,
-        MAX_A_ATTEMPTS + 1
-    ):
+    node_names = list(graph.keys())
 
-        a_name = random.choice(
-            node_names
-        )
+    # Shuffle so experiments don't always start
+    # from the same location.
+    random.shuffle(node_names)
+
+    best_a = None
+    best_distances = None
+    best_max_distance = 0
+
+    # --------------------------------------------------------
+    # Find a starting node that actually has a long
+    # connected road network.
+    # --------------------------------------------------------
+
+    for attempt, a_name in enumerate(
+        node_names[:MAX_A_ATTEMPTS],
+        start=1
+    ):
 
         distances = dijkstra(
             graph,
             a_name,
-            MIN_ROUTE_DISTANCE_M
+            10000.0
         )
 
-        # Nodes that can actually be reached
-        # by at least 5 km of road.
-
-        candidates = [
-            (
-                name,
-                dist
-            )
-
-            for name, dist
-            in distances.items()
-
-            if (
-                dist >=
-                MIN_ROUTE_DISTANCE_M
-            )
-        ]
-
-        if not candidates:
+        if not distances:
             continue
 
-        b_name, route_distance = (
-            random.choice(
-                candidates
-            )
+        farthest_distance = max(
+            distances.values()
         )
 
-        return (
-            nodes[a_name],
-            nodes[b_name],
-            route_distance
+        # Remember the best starting point we found.
+        if farthest_distance > best_max_distance:
+
+            best_max_distance = (
+                farthest_distance
+            )
+
+            best_a = a_name
+            best_distances = distances
+
+        # We found an A with enough road.
+        if (
+            farthest_distance
+            >= MIN_ROUTE_DISTANCE_M
+        ):
+
+            candidates = [
+                (
+                    name,
+                    dist
+                )
+                for name, dist
+                in distances.items()
+                if (
+                    dist
+                    >= MIN_ROUTE_DISTANCE_M
+                )
+            ]
+
+            if candidates:
+
+                # Random B among valid destinations.
+                b_name, route_distance = (
+                    random.choice(
+                        candidates
+                    )
+                )
+
+                print()
+                print(
+                    f"Found valid route "
+                    f"after {attempt} attempts."
+                )
+
+                return (
+                    nodes[a_name],
+                    nodes[b_name],
+                    route_distance
+                )
+
+    # --------------------------------------------------------
+    # If we reach here, report what we actually found.
+    # --------------------------------------------------------
+
+    print()
+    print(
+        "Could not find a route meeting "
+        "the requested minimum."
+    )
+
+    print(
+        f"Best reachable road distance found: "
+        f"{best_max_distance / 1000:.2f} km"
+    )
+
+    # --------------------------------------------------------
+    # Fallback: use the farthest reachable point
+    # if there is one.
+    # --------------------------------------------------------
+
+    if (
+        best_a is not None
+        and best_distances
+    ):
+
+        farthest_node = max(
+            best_distances,
+            key=best_distances.get
         )
+
+        route_distance = (
+            best_distances[
+                farthest_node
+            ]
+        )
+
+        print()
+        print(
+            "Farthest available route:"
+        )
+
+        print(
+            f"{route_distance / 1000:.2f} km"
+        )
+
+        # Only accept it if it's at least
+        # 1 km. This prevents completely
+        # useless experiments.
+
+        if route_distance >= 1000:
+
+            print(
+                "Using farthest available "
+                "route as fallback."
+            )
+
+            return (
+                nodes[best_a],
+                nodes[farthest_node],
+                route_distance
+            )
 
     return None, None, None
-
 
 # ============================================================
 # TELEPORT
