@@ -26,20 +26,14 @@ MAX_DATA_AGE = 0.5
 # ============================================================
 # VEHICLE CONFIGURATION
 # ============================================================
-#
-# IMPORTANT:
-# Set this to the actual mass of the vehicle you are using.
-#
-# This is NOT measured from OutGauge.
-#
+
+# Put the actual mass of your BeamNG vehicle here.
 # Example:
 # VEHICLE_MASS_KG = 1500.0
 #
-# If you don't know the exact mass yet, leave it as NaN.
-#
-# ============================================================
+# Keep NaN if you don't know it yet.
 
-VEHICLE_MASS_KG = 2135.059
+VEHICLE_MASS_KG = float("nan")
 
 
 # ============================================================
@@ -53,13 +47,35 @@ outgauge_latest = None
 
 data_lock = threading.Lock()
 
-# Distance integration
 distance_lock = threading.Lock()
 
 odometer_m = 0.0
 trip_m = 0.0
 
 last_distance_time = None
+
+
+# ============================================================
+# BATTERY STATE
+# ============================================================
+#
+# IMPORTANT:
+#
+# These are intentionally NOT fake values.
+#
+# They will remain NaN until we connect a genuine battery
+# telemetry source.
+#
+# This keeps your research dataset scientifically valid.
+#
+# ============================================================
+
+battery_voltage_v = float("nan")
+battery_current_a = float("nan")
+battery_temperature_c = float("nan")
+battery_soc = float("nan")
+
+battery_energy_wh = float("nan")
 
 
 # ============================================================
@@ -99,7 +115,7 @@ def calculate_direction(vx, vy, vz):
 
 
 # ============================================================
-# MOTIONSIM LISTENER
+# MOTIONSIM
 # ============================================================
 
 def motion_listener():
@@ -132,9 +148,7 @@ def motion_listener():
 
         try:
 
-            data, _ = sock.recvfrom(
-                4096
-            )
+            data, _ = sock.recvfrom(4096)
 
         except socket.timeout:
 
@@ -144,9 +158,7 @@ def motion_listener():
 
             continue
 
-        # MotionSim packet:
-        # 4 byte header + 21 floats
-        # = 88 bytes
+        # BNG1 + 21 floats = 88 bytes
 
         if len(data) != 88:
 
@@ -167,10 +179,6 @@ def motion_listener():
 
             continue
 
-        # ----------------------------------------------------
-        # Velocity
-        # ----------------------------------------------------
-
         vx = values[4]
         vy = values[5]
         vz = values[6]
@@ -189,49 +197,37 @@ def motion_listener():
             )
         )
 
-        # ----------------------------------------------------
-        # Motion sample
-        # ----------------------------------------------------
-
         sample = {
 
             "timestamp":
                 time.perf_counter(),
 
-            # Position
             "x_m": values[1],
             "y_m": values[2],
             "z_m": values[3],
 
-            # Velocity
             "vx_mps": vx,
             "vy_mps": vy,
             "vz_mps": vz,
 
-            # Speed
             "speed_mps": speed,
 
-            # Acceleration
             "ax_mps2": values[7],
             "ay_mps2": values[8],
             "az_mps2": values[9],
 
-            # Direction
             "dir_x": dir_x,
             "dir_y": dir_y,
             "dir_z": dir_z,
 
-            # Orientation
             "roll": values[13],
             "pitch": values[14],
             "yaw": values[15],
 
-            # Angular velocity
             "roll_vel": values[16],
             "pitch_vel": values[17],
             "yaw_vel": values[18],
 
-            # Angular acceleration
             "roll_acc": values[19],
             "pitch_acc": values[20],
             "yaw_acc": values[21]
@@ -243,7 +239,7 @@ def motion_listener():
 
 
 # ============================================================
-# OUTGAUGE LISTENER
+# OUTGAUGE
 # ============================================================
 
 def outgauge_listener():
@@ -276,9 +272,7 @@ def outgauge_listener():
 
         try:
 
-            data, _ = sock.recvfrom(
-                4096
-            )
+            data, _ = sock.recvfrom(4096)
 
         except socket.timeout:
 
@@ -288,38 +282,9 @@ def outgauge_listener():
 
             continue
 
-        # BeamNG OutGauge packet
-        # = 96 bytes
-
         if len(data) != 96:
 
             continue
-
-        # ====================================================
-        # CORRECT BEAMNG OUTGAUGE STRUCTURE
-        # ====================================================
-        #
-        # uint32 time
-        # char[4] car
-        # uint16 flags
-        # char gear
-        # char playerID
-        # float speed
-        # float rpm
-        # float turbo
-        # float engine temperature
-        # float fuel
-        # float oil pressure
-        # float oil temperature
-        # uint32 dash lights
-        # uint32 show lights
-        # float throttle
-        # float brake
-        # float clutch
-        # char display[32]
-        # int id
-        #
-        # ====================================================
 
         try:
 
@@ -337,26 +302,9 @@ def outgauge_listener():
 
             continue
 
-        # ----------------------------------------------------
-        # IMPORTANT FIELD MAPPING
-        # ----------------------------------------------------
-
-        # values[3] = gear
-        #
-        # BeamNG:
-        # Reverse = 0
-        # Neutral = 1
-        # First = 2
-        # Second = 3
-        # etc.
-        #
-        # Convert to more intuitive gear index:
-        #
-        # Reverse -> -1
-        # Neutral -> 0
-        # First   -> 1
-        # Second  -> 2
-        # etc.
+        # ====================================================
+        # GEAR
+        # ====================================================
 
         raw_gear = values[3]
 
@@ -368,15 +316,13 @@ def outgauge_listener():
 
             gear_index = raw_gear - 1
 
-        # ----------------------------------------------------
-        # Dashboard flags
-        # ----------------------------------------------------
+        # ====================================================
+        # DASHBOARD FLAGS
+        # ====================================================
 
         show_lights = values[13]
 
-        # BeamNG OutGauge:
-        #
-        # DL_HANDBRAKE = 2^2 = 4
+        # Handbrake flag
 
         parkingbrake = (
             1.0
@@ -384,9 +330,9 @@ def outgauge_listener():
             else 0.0
         )
 
-        # ----------------------------------------------------
-        # CORRECT FIELD INDICES
-        # ----------------------------------------------------
+        # ====================================================
+        # OUTGAUGE VALUES
+        # ====================================================
 
         sample = {
 
@@ -396,43 +342,36 @@ def outgauge_listener():
             "gear_index":
                 gear_index,
 
-            # Speed
             "speed_mps":
                 values[5],
 
-            # Engine RPM
             "rpm":
                 values[6],
 
-            # Engine coolant
             "coolant_c":
                 values[8],
 
-            # Fuel ratio
             "fuel":
                 values[9],
 
-            # Oil pressure
             "oil_pressure":
                 values[10],
 
-            # Oil temperature
             "oil_c":
                 values[11],
 
-            # CORRECT!
+            # IMPORTANT:
+            # Correct OutGauge indices
+
             "throttle":
                 values[14],
 
-            # CORRECT!
             "brake":
                 values[15],
 
-            # CORRECT!
             "clutch":
                 values[16],
 
-            # Parking brake from dashboard flag
             "parkingbrake":
                 parkingbrake
         }
@@ -461,6 +400,7 @@ FIELDS = [
     "vy_mps",
     "vz_mps",
 
+    # Speed
     "speed_mps",
 
     # Acceleration
@@ -498,7 +438,7 @@ FIELDS = [
     "wheel_av_rl",
     "wheel_av_rr",
 
-    # Brake temperatures
+    # Brake temperature
     "brake_temp_fl",
     "brake_temp_fr",
     "brake_temp_rl",
@@ -507,7 +447,7 @@ FIELDS = [
     # Aerodynamics
     "downforce_fl",
 
-    # Temperatures
+    # Temperature
     "coolant_c",
     "oil_c",
 
@@ -528,13 +468,19 @@ FIELDS = [
     "engine_running",
     "damage",
 
-    # Battery
+    # ========================================================
+    # BATTERY
+    # ========================================================
+
     "battery_voltage_v",
     "battery_current_a",
     "battery_temperature_c",
     "battery_soc",
 
-    # Additional
+    "battery_power_w",
+    "battery_energy_wh",
+
+    # Oil
     "oil_pressure",
 
     # Orientation
@@ -553,7 +499,7 @@ FIELDS = [
 
 
 # ============================================================
-# DISTANCE INTEGRATION
+# DISTANCE
 # ============================================================
 
 def update_distance(speed_mps):
@@ -579,12 +525,9 @@ def update_distance(speed_mps):
 
         last_distance_time = now
 
-        # Ignore abnormal time gaps
         if dt <= 0 or dt > 1.0:
 
             return
-
-        # Distance = speed × time
 
         distance = (
             max(speed_mps, 0.0)
@@ -592,6 +535,7 @@ def update_distance(speed_mps):
         )
 
         odometer_m += distance
+
         trip_m += distance
 
 
@@ -623,7 +567,7 @@ def build_row(
     row["seq"] = sequence
 
     # ========================================================
-    # VEHICLE MASS
+    # MASS
     # ========================================================
 
     row["mass_kg"] = (
@@ -631,12 +575,12 @@ def build_row(
     )
 
     # ========================================================
-    # MOTION DATA
+    # MOTION
     # ========================================================
 
     if motion is not None:
 
-        for key in [
+        motion_fields = [
 
             "x_m",
             "y_m",
@@ -667,7 +611,9 @@ def build_row(
             "roll_acc",
             "pitch_acc",
             "yaw_acc"
-        ]:
+        ]
+
+        for key in motion_fields:
 
             if key in motion:
 
@@ -679,25 +625,15 @@ def build_row(
 
     if gauge is not None:
 
-        # ----------------------------------------------------
-        # Gear
-        # ----------------------------------------------------
-
         row["gear_index"] = (
             gauge["gear_index"]
         )
-
-        # ----------------------------------------------------
-        # RPM
-        # ----------------------------------------------------
 
         row["rpm"] = (
             gauge["rpm"]
         )
 
-        # ----------------------------------------------------
-        # Speed
-        # ----------------------------------------------------
+        # MotionSim is primary speed source
 
         if math.isnan(
             row["speed_mps"]
@@ -707,17 +643,9 @@ def build_row(
                 gauge["speed_mps"]
             )
 
-        # ----------------------------------------------------
-        # Coolant
-        # ----------------------------------------------------
-
         row["coolant_c"] = (
             gauge["coolant_c"]
         )
-
-        # ----------------------------------------------------
-        # Oil
-        # ----------------------------------------------------
 
         row["oil_c"] = (
             gauge["oil_c"]
@@ -727,22 +655,14 @@ def build_row(
             gauge["oil_pressure"]
         )
 
-        # ----------------------------------------------------
-        # Fuel
-        # ----------------------------------------------------
-
-        # OutGauge fuel is 0..1 ratio.
-        #
-        # We don't know actual tank capacity here,
-        # so keep the ratio rather than pretending it is liters.
+        # Fuel is a normalized 0-1 value.
+        # Do NOT label it liters.
 
         row["fuel_volume_l"] = (
             gauge["fuel"]
         )
 
-        # ----------------------------------------------------
-        # DRIVER INPUTS
-        # ----------------------------------------------------
+        # Driver controls
 
         row["throttle"] = (
             gauge["throttle"]
@@ -755,10 +675,6 @@ def build_row(
         row["clutch_ratio"] = (
             gauge["clutch"]
         )
-
-        # ----------------------------------------------------
-        # PARKING BRAKE
-        # ----------------------------------------------------
 
         row["parkingbrake"] = (
             gauge["parkingbrake"]
@@ -798,38 +714,20 @@ def build_row(
     # ========================================================
     # IGNITION LEVEL
     # ========================================================
-    #
-    # This is a DERIVED approximation.
-    #
-    # It is NOT the actual BeamNG ignitionLevel.
-    #
-    # 0 = off
-    # 2 = ignition/engine running
-    #
-    # We don't have accessory/starter state through OutGauge.
-    #
-    # ========================================================
 
     if not math.isnan(
         row["rpm"]
     ):
 
-        if row["rpm"] > 100.0:
+        row["ignition_level"] = (
 
-            row["ignition_level"] = 2.0
-
-        else:
-
-            row["ignition_level"] = 0.0
+            2.0
+            if row["rpm"] > 100.0
+            else 0.0
+        )
 
     # ========================================================
-    # ODOMETER / TRIP
-    # ========================================================
-    #
-    # These are distance-integrated values from MotionSim speed.
-    #
-    # They are NOT the vehicle's internal BeamNG odometer.
-    #
+    # DISTANCE
     # ========================================================
 
     with distance_lock:
@@ -841,6 +739,73 @@ def build_row(
         row["trip_m"] = (
             trip_m
         )
+
+    # ========================================================
+    # BATTERY
+    # ========================================================
+    #
+    # CURRENTLY:
+    #
+    # These values come from the battery state variables above.
+    #
+    # They remain NaN until a REAL battery telemetry source
+    # is connected.
+    #
+    # ========================================================
+
+    row["battery_voltage_v"] = (
+        battery_voltage_v
+    )
+
+    row["battery_current_a"] = (
+        battery_current_a
+    )
+
+    row["battery_temperature_c"] = (
+        battery_temperature_c
+    )
+
+    row["battery_soc"] = (
+        battery_soc
+    )
+
+    # ========================================================
+    # BATTERY POWER
+    # ========================================================
+
+    if (
+        not math.isnan(
+            battery_voltage_v
+        )
+        and
+        not math.isnan(
+            battery_current_a
+        )
+    ):
+
+        row["battery_power_w"] = (
+
+            battery_voltage_v
+            * battery_current_a
+        )
+
+    # ========================================================
+    # BATTERY ENERGY
+    # ========================================================
+    #
+    # Left NaN until actual battery current/voltage are available.
+    #
+    # We will integrate:
+    #
+    # E = integral(V * I * dt)
+    #
+    # in the battery phase.
+    #
+    # ========================================================
+
+    row["battery_energy_wh"] = (
+        battery_energy_wh
+    )
 
     return row
 
@@ -890,7 +855,7 @@ def csv_writer():
             if now >= next_sample:
 
                 # =================================================
-                # COPY TELEMETRY
+                # COPY CURRENT TELEMETRY
                 # =================================================
 
                 with data_lock:
@@ -916,7 +881,7 @@ def csv_writer():
                     )
 
                 # =================================================
-                # WAIT FOR BOTH SOURCES
+                # WAIT FOR BOTH
                 # =================================================
 
                 if (
@@ -933,7 +898,7 @@ def csv_writer():
                     continue
 
                 # =================================================
-                # CHECK DATA AGE
+                # DATA AGE
                 # =================================================
 
                 current_time = (
@@ -967,7 +932,7 @@ def csv_writer():
                     continue
 
                 # =================================================
-                # UPDATE DISTANCE
+                # DISTANCE
                 # =================================================
 
                 update_distance(
@@ -975,7 +940,7 @@ def csv_writer():
                 )
 
                 # =================================================
-                # BUILD ROW
+                # BUILD
                 # =================================================
 
                 row = build_row(
@@ -1003,7 +968,7 @@ def csv_writer():
                     SAMPLE_INTERVAL
                 )
 
-                # Prevent burst after lag
+                # Prevent backlog
 
                 if now > (
                     next_sample
@@ -1051,18 +1016,10 @@ if __name__ == "__main__":
 
     print()
 
-    # --------------------------------------------------------
-    # Start MotionSim
-    # --------------------------------------------------------
-
     t1 = threading.Thread(
         target=motion_listener,
         daemon=True
     )
-
-    # --------------------------------------------------------
-    # Start OutGauge
-    # --------------------------------------------------------
 
     t2 = threading.Thread(
         target=outgauge_listener,
@@ -1070,11 +1027,8 @@ if __name__ == "__main__":
     )
 
     t1.start()
-    t2.start()
 
-    # --------------------------------------------------------
-    # Start collector
-    # --------------------------------------------------------
+    t2.start()
 
     try:
 
