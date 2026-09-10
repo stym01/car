@@ -20,17 +20,46 @@ OUTGAUGE_PORT = 4444
 
 OUTPUT_FILE = "telemetry.csv"
 
-# Maximum age allowed for UDP telemetry
 MAX_DATA_AGE = 0.5
+
+
+# ============================================================
+# VEHICLE CONFIGURATION
+# ============================================================
+#
+# IMPORTANT:
+# Set this to the actual mass of the vehicle you are using.
+#
+# This is NOT measured from OutGauge.
+#
+# Example:
+# VEHICLE_MASS_KG = 1500.0
+#
+# If you don't know the exact mass yet, leave it as NaN.
+#
+# ============================================================
+
+VEHICLE_MASS_KG = 2135.059
+
+
+# ============================================================
+# GLOBAL STATE
+# ============================================================
 
 running = True
 
 motion_latest = None
 outgauge_latest = None
 
-# IMPORTANT:
-# One lock shared by all threads
 data_lock = threading.Lock()
+
+# Distance integration
+distance_lock = threading.Lock()
+
+odometer_m = 0.0
+trip_m = 0.0
+
+last_distance_time = None
 
 
 # ============================================================
@@ -38,6 +67,7 @@ data_lock = threading.Lock()
 # ============================================================
 
 def calculate_speed(vx, vy, vz):
+
     return math.sqrt(
         vx * vx +
         vy * vy +
@@ -47,10 +77,19 @@ def calculate_speed(vx, vy, vz):
 
 def calculate_direction(vx, vy, vz):
 
-    speed = calculate_speed(vx, vy, vz)
+    speed = calculate_speed(
+        vx,
+        vy,
+        vz
+    )
 
     if speed < 0.1:
-        return 0.0, 0.0, 0.0
+
+        return (
+            0.0,
+            0.0,
+            0.0
+        )
 
     return (
         vx / speed,
@@ -85,24 +124,32 @@ def motion_listener():
     sock.settimeout(1.0)
 
     print(
-        f"[MotionSim] Listening on {MOTIONSIM_PORT}"
+        f"[MotionSim] Listening on "
+        f"{MOTIONSIM_PORT}"
     )
 
     while running:
 
         try:
-            data, _ = sock.recvfrom(4096)
+
+            data, _ = sock.recvfrom(
+                4096
+            )
 
         except socket.timeout:
+
             continue
 
         except Exception:
+
             continue
 
-        # Expected MotionSim packet
-        # 4 bytes header + 21 floats = 88 bytes
+        # MotionSim packet:
+        # 4 byte header + 21 floats
+        # = 88 bytes
 
         if len(data) != 88:
+
             continue
 
         try:
@@ -113,9 +160,11 @@ def motion_listener():
             )
 
         except struct.error:
+
             continue
 
         if values[0] != b"BNG1":
+
             continue
 
         # ----------------------------------------------------
@@ -132,14 +181,16 @@ def motion_listener():
             vz
         )
 
-        dir_x, dir_y, dir_z = calculate_direction(
-            vx,
-            vy,
-            vz
+        dir_x, dir_y, dir_z = (
+            calculate_direction(
+                vx,
+                vy,
+                vz
+            )
         )
 
         # ----------------------------------------------------
-        # Create MotionSim sample
+        # Motion sample
         # ----------------------------------------------------
 
         sample = {
@@ -183,14 +234,11 @@ def motion_listener():
             # Angular acceleration
             "roll_acc": values[19],
             "pitch_acc": values[20],
-            "yaw_acc": values[21],
+            "yaw_acc": values[21]
         }
 
-        # ----------------------------------------------------
-        # Update shared telemetry
-        # ----------------------------------------------------
-
         with data_lock:
+
             motion_latest = sample
 
 
@@ -220,31 +268,58 @@ def outgauge_listener():
     sock.settimeout(1.0)
 
     print(
-        f"[OutGauge] Listening on {OUTGAUGE_PORT}"
+        f"[OutGauge] Listening on "
+        f"{OUTGAUGE_PORT}"
     )
 
     while running:
 
         try:
-            data, _ = sock.recvfrom(4096)
+
+            data, _ = sock.recvfrom(
+                4096
+            )
 
         except socket.timeout:
+
             continue
 
         except Exception:
+
             continue
 
-        # Your BeamNG setup sends 96-byte packets
+        # BeamNG OutGauge packet
+        # = 96 bytes
 
         if len(data) != 96:
+
             continue
 
-        # ----------------------------------------------------
-        # IMPORTANT
+        # ====================================================
+        # CORRECT BEAMNG OUTGAUGE STRUCTURE
+        # ====================================================
         #
-        # This is the packet format that was already working
-        # with your BeamNG setup.
-        # ----------------------------------------------------
+        # uint32 time
+        # char[4] car
+        # uint16 flags
+        # char gear
+        # char playerID
+        # float speed
+        # float rpm
+        # float turbo
+        # float engine temperature
+        # float fuel
+        # float oil pressure
+        # float oil temperature
+        # uint32 dash lights
+        # uint32 show lights
+        # float throttle
+        # float brake
+        # float clutch
+        # char display[32]
+        # int id
+        #
+        # ====================================================
 
         try:
 
@@ -256,14 +331,61 @@ def outgauge_listener():
         except struct.error as e:
 
             print(
-                "[OutGauge] Packet decode error:",
+                "[OutGauge] Decode error:",
                 e
             )
 
             continue
 
         # ----------------------------------------------------
-        # Extract values
+        # IMPORTANT FIELD MAPPING
+        # ----------------------------------------------------
+
+        # values[3] = gear
+        #
+        # BeamNG:
+        # Reverse = 0
+        # Neutral = 1
+        # First = 2
+        # Second = 3
+        # etc.
+        #
+        # Convert to more intuitive gear index:
+        #
+        # Reverse -> -1
+        # Neutral -> 0
+        # First   -> 1
+        # Second  -> 2
+        # etc.
+
+        raw_gear = values[3]
+
+        if raw_gear == 0:
+
+            gear_index = -1
+
+        else:
+
+            gear_index = raw_gear - 1
+
+        # ----------------------------------------------------
+        # Dashboard flags
+        # ----------------------------------------------------
+
+        show_lights = values[13]
+
+        # BeamNG OutGauge:
+        #
+        # DL_HANDBRAKE = 2^2 = 4
+
+        parkingbrake = (
+            1.0
+            if (show_lights & 4)
+            else 0.0
+        )
+
+        # ----------------------------------------------------
+        # CORRECT FIELD INDICES
         # ----------------------------------------------------
 
         sample = {
@@ -272,41 +394,51 @@ def outgauge_listener():
                 time.perf_counter(),
 
             "gear_index":
-                values[3],
+                gear_index,
 
+            # Speed
             "speed_mps":
                 values[5],
 
+            # Engine RPM
             "rpm":
                 values[6],
 
+            # Engine coolant
             "coolant_c":
                 values[8],
 
+            # Fuel ratio
             "fuel":
                 values[9],
 
+            # Oil pressure
             "oil_pressure":
                 values[10],
 
+            # Oil temperature
             "oil_c":
                 values[11],
 
+            # CORRECT!
             "throttle":
+                values[14],
+
+            # CORRECT!
+            "brake":
+                values[15],
+
+            # CORRECT!
+            "clutch":
                 values[16],
 
-            "brake":
-                values[17],
-
-            "clutch":
-                values[18],
+            # Parking brake from dashboard flag
+            "parkingbrake":
+                parkingbrake
         }
 
-        # ----------------------------------------------------
-        # Update shared telemetry
-        # ----------------------------------------------------
-
         with data_lock:
+
             outgauge_latest = sample
 
 
@@ -316,147 +448,96 @@ def outgauge_listener():
 
 FIELDS = [
 
-    # --------------------------------------------------------
-    # Time
-    # --------------------------------------------------------
-
     "t_s",
     "seq",
 
-    # --------------------------------------------------------
     # Position
-    # --------------------------------------------------------
-
     "x_m",
     "y_m",
     "z_m",
 
-    # --------------------------------------------------------
     # Velocity
-    # --------------------------------------------------------
-
     "vx_mps",
     "vy_mps",
     "vz_mps",
 
     "speed_mps",
 
-    # --------------------------------------------------------
     # Acceleration
-    # --------------------------------------------------------
-
     "ax_mps2",
     "ay_mps2",
     "az_mps2",
 
-    # --------------------------------------------------------
     # Direction
-    # --------------------------------------------------------
-
     "dir_x",
     "dir_y",
     "dir_z",
 
-    # --------------------------------------------------------
     # Vehicle
-    # --------------------------------------------------------
-
     "mass_kg",
 
-    # --------------------------------------------------------
     # Engine
-    # --------------------------------------------------------
-
     "rpm",
     "engine_torque_nm",
     "engine_av_rads",
     "engine_load",
     "exhaust_flow",
 
-    # --------------------------------------------------------
     # Transmission
-    # --------------------------------------------------------
-
     "gear_index",
     "clutch_ratio",
 
-    # --------------------------------------------------------
     # Driver inputs
-    # --------------------------------------------------------
-
     "throttle",
     "brake",
     "steering",
 
-    # --------------------------------------------------------
     # Wheels
-    # --------------------------------------------------------
-
     "wheel_av_fl",
     "wheel_av_fr",
     "wheel_av_rl",
     "wheel_av_rr",
 
-    # --------------------------------------------------------
     # Brake temperatures
-    # --------------------------------------------------------
-
     "brake_temp_fl",
     "brake_temp_fr",
     "brake_temp_rl",
     "brake_temp_rr",
 
-    # --------------------------------------------------------
     # Aerodynamics
-    # --------------------------------------------------------
-
     "downforce_fl",
 
-    # --------------------------------------------------------
-    # Temperature
-    # --------------------------------------------------------
-
+    # Temperatures
     "coolant_c",
     "oil_c",
 
-    # --------------------------------------------------------
-    # Fuel / distance
-    # --------------------------------------------------------
-
+    # Fuel
     "fuel_volume_l",
+
+    # Distance
     "odometer_m",
     "trip_m",
+
+    # Altitude
     "altitude_m",
 
-    # --------------------------------------------------------
     # Vehicle state
-    # --------------------------------------------------------
-
     "ignition_level",
     "parkingbrake",
     "avg_wheel_av",
     "engine_running",
     "damage",
 
-    # --------------------------------------------------------
     # Battery
-    # --------------------------------------------------------
-
     "battery_voltage_v",
     "battery_current_a",
     "battery_temperature_c",
     "battery_soc",
 
-    # --------------------------------------------------------
     # Additional
-    # --------------------------------------------------------
-
     "oil_pressure",
 
-    # --------------------------------------------------------
     # Orientation
-    # --------------------------------------------------------
-
     "roll",
     "pitch",
     "yaw",
@@ -467,12 +548,55 @@ FIELDS = [
 
     "roll_acc",
     "pitch_acc",
-    "yaw_acc",
+    "yaw_acc"
 ]
 
 
 # ============================================================
-# BUILD DATA ROW
+# DISTANCE INTEGRATION
+# ============================================================
+
+def update_distance(speed_mps):
+
+    global odometer_m
+    global trip_m
+    global last_distance_time
+
+    now = time.perf_counter()
+
+    with distance_lock:
+
+        if last_distance_time is None:
+
+            last_distance_time = now
+
+            return
+
+        dt = (
+            now
+            - last_distance_time
+        )
+
+        last_distance_time = now
+
+        # Ignore abnormal time gaps
+        if dt <= 0 or dt > 1.0:
+
+            return
+
+        # Distance = speed × time
+
+        distance = (
+            max(speed_mps, 0.0)
+            * dt
+        )
+
+        odometer_m += distance
+        trip_m += distance
+
+
+# ============================================================
+# BUILD ROW
 # ============================================================
 
 def build_row(
@@ -482,17 +606,14 @@ def build_row(
     sequence
 ):
 
-    # Start every field as NaN.
-    # We NEVER invent unavailable measurements.
-
     row = {
         field: float("nan")
         for field in FIELDS
     }
 
-    # --------------------------------------------------------
-    # Time
-    # --------------------------------------------------------
+    # ========================================================
+    # TIME
+    # ========================================================
 
     row["t_s"] = (
         time.perf_counter()
@@ -501,13 +622,21 @@ def build_row(
 
     row["seq"] = sequence
 
-    # --------------------------------------------------------
-    # MotionSim
-    # --------------------------------------------------------
+    # ========================================================
+    # VEHICLE MASS
+    # ========================================================
+
+    row["mass_kg"] = (
+        VEHICLE_MASS_KG
+    )
+
+    # ========================================================
+    # MOTION DATA
+    # ========================================================
 
     if motion is not None:
 
-        motion_fields = [
+        for key in [
 
             "x_m",
             "y_m",
@@ -537,112 +666,107 @@ def build_row(
 
             "roll_acc",
             "pitch_acc",
-            "yaw_acc",
-        ]
-
-        for key in motion_fields:
+            "yaw_acc"
+        ]:
 
             if key in motion:
 
                 row[key] = motion[key]
 
-    # --------------------------------------------------------
-    # OutGauge
-    # --------------------------------------------------------
+    # ========================================================
+    # OUTGAUGE
+    # ========================================================
 
     if gauge is not None:
 
-        if "gear_index" in gauge:
+        # ----------------------------------------------------
+        # Gear
+        # ----------------------------------------------------
 
-            row["gear_index"] = (
-                gauge["gear_index"]
-            )
+        row["gear_index"] = (
+            gauge["gear_index"]
+        )
 
-        if "rpm" in gauge:
+        # ----------------------------------------------------
+        # RPM
+        # ----------------------------------------------------
 
-            row["rpm"] = (
-                gauge["rpm"]
-            )
+        row["rpm"] = (
+            gauge["rpm"]
+        )
 
         # ----------------------------------------------------
         # Speed
         # ----------------------------------------------------
 
-        if "speed_mps" in gauge:
+        if math.isnan(
+            row["speed_mps"]
+        ):
 
-            # MotionSim is preferred.
-
-            if math.isnan(
-                row["speed_mps"]
-            ):
-
-                row["speed_mps"] = (
-                    gauge["speed_mps"]
-                )
-
-        # ----------------------------------------------------
-        # Temperatures
-        # ----------------------------------------------------
-
-        if "coolant_c" in gauge:
-
-            row["coolant_c"] = (
-                gauge["coolant_c"]
-            )
-
-        if "oil_c" in gauge:
-
-            row["oil_c"] = (
-                gauge["oil_c"]
+            row["speed_mps"] = (
+                gauge["speed_mps"]
             )
 
         # ----------------------------------------------------
-        # Oil pressure
+        # Coolant
         # ----------------------------------------------------
 
-        if "oil_pressure" in gauge:
+        row["coolant_c"] = (
+            gauge["coolant_c"]
+        )
 
-            row["oil_pressure"] = (
-                gauge["oil_pressure"]
-            )
+        # ----------------------------------------------------
+        # Oil
+        # ----------------------------------------------------
+
+        row["oil_c"] = (
+            gauge["oil_c"]
+        )
+
+        row["oil_pressure"] = (
+            gauge["oil_pressure"]
+        )
 
         # ----------------------------------------------------
         # Fuel
         # ----------------------------------------------------
 
-        if "fuel" in gauge:
+        # OutGauge fuel is 0..1 ratio.
+        #
+        # We don't know actual tank capacity here,
+        # so keep the ratio rather than pretending it is liters.
 
-            row["fuel_volume_l"] = (
-                gauge["fuel"]
-            )
+        row["fuel_volume_l"] = (
+            gauge["fuel"]
+        )
 
         # ----------------------------------------------------
-        # Driver controls
+        # DRIVER INPUTS
         # ----------------------------------------------------
 
-        if "throttle" in gauge:
+        row["throttle"] = (
+            gauge["throttle"]
+        )
 
-            row["throttle"] = (
-                gauge["throttle"]
-            )
+        row["brake"] = (
+            gauge["brake"]
+        )
 
-        if "brake" in gauge:
+        row["clutch_ratio"] = (
+            gauge["clutch"]
+        )
 
-            row["brake"] = (
-                gauge["brake"]
-            )
+        # ----------------------------------------------------
+        # PARKING BRAKE
+        # ----------------------------------------------------
 
-        if "clutch" in gauge:
-
-            row["clutch_ratio"] = (
-                gauge["clutch"]
-            )
+        row["parkingbrake"] = (
+            gauge["parkingbrake"]
+        )
 
     # ========================================================
-    # DERIVED ENGINE VALUES
+    # ENGINE ANGULAR VELOCITY
     # ========================================================
-
-    # RPM → rad/s
 
     if not math.isnan(
         row["rpm"]
@@ -656,13 +780,66 @@ def build_row(
             / 60.0
         )
 
-        # Engine running state
+    # ========================================================
+    # ENGINE RUNNING
+    # ========================================================
+
+    if not math.isnan(
+        row["rpm"]
+    ):
 
         row["engine_running"] = (
 
-            1
-            if row["rpm"] > 100
-            else 0
+            1.0
+            if row["rpm"] > 100.0
+            else 0.0
+        )
+
+    # ========================================================
+    # IGNITION LEVEL
+    # ========================================================
+    #
+    # This is a DERIVED approximation.
+    #
+    # It is NOT the actual BeamNG ignitionLevel.
+    #
+    # 0 = off
+    # 2 = ignition/engine running
+    #
+    # We don't have accessory/starter state through OutGauge.
+    #
+    # ========================================================
+
+    if not math.isnan(
+        row["rpm"]
+    ):
+
+        if row["rpm"] > 100.0:
+
+            row["ignition_level"] = 2.0
+
+        else:
+
+            row["ignition_level"] = 0.0
+
+    # ========================================================
+    # ODOMETER / TRIP
+    # ========================================================
+    #
+    # These are distance-integrated values from MotionSim speed.
+    #
+    # They are NOT the vehicle's internal BeamNG odometer.
+    #
+    # ========================================================
+
+    with distance_lock:
+
+        row["odometer_m"] = (
+            odometer_m
+        )
+
+        row["trip_m"] = (
+            trip_m
         )
 
     return row
@@ -710,15 +887,11 @@ def csv_writer():
 
             now = time.monotonic()
 
-            # =================================================
-            # TIME TO TAKE SAMPLE
-            # =================================================
-
             if now >= next_sample:
 
-                # -------------------------------------------------
-                # Safely copy latest telemetry
-                # -------------------------------------------------
+                # =================================================
+                # COPY TELEMETRY
+                # =================================================
 
                 with data_lock:
 
@@ -742,46 +915,13 @@ def csv_writer():
                         else None
                     )
 
-                # -------------------------------------------------
-                # Do not record until BOTH sources exist
-                # -------------------------------------------------
-
-                if motion is None or gauge is None:
-
-                    next_sample += (
-                        SAMPLE_INTERVAL
-                    )
-
-                    time.sleep(0.002)
-
-                    continue
-
-                # -------------------------------------------------
-                # Check freshness
-                # -------------------------------------------------
-
-                current_perf = (
-                    time.perf_counter()
-                )
-
-                motion_age = (
-                    current_perf
-                    - motion["timestamp"]
-                )
-
-                gauge_age = (
-                    current_perf
-                    - gauge["timestamp"]
-                )
-
-                # -------------------------------------------------
-                # Do not record stale packets
-                # -------------------------------------------------
+                # =================================================
+                # WAIT FOR BOTH SOURCES
+                # =================================================
 
                 if (
-                    motion_age > MAX_DATA_AGE
-                    or
-                    gauge_age > MAX_DATA_AGE
+                    motion is None
+                    or gauge is None
                 ):
 
                     next_sample += (
@@ -792,22 +932,62 @@ def csv_writer():
 
                     continue
 
-                # -------------------------------------------------
-                # Build row
-                # -------------------------------------------------
+                # =================================================
+                # CHECK DATA AGE
+                # =================================================
+
+                current_time = (
+                    time.perf_counter()
+                )
+
+                motion_age = (
+                    current_time
+                    - motion["timestamp"]
+                )
+
+                gauge_age = (
+                    current_time
+                    - gauge["timestamp"]
+                )
+
+                if (
+                    motion_age
+                    > MAX_DATA_AGE
+                    or
+                    gauge_age
+                    > MAX_DATA_AGE
+                ):
+
+                    next_sample += (
+                        SAMPLE_INTERVAL
+                    )
+
+                    time.sleep(0.002)
+
+                    continue
+
+                # =================================================
+                # UPDATE DISTANCE
+                # =================================================
+
+                update_distance(
+                    motion["speed_mps"]
+                )
+
+                # =================================================
+                # BUILD ROW
+                # =================================================
 
                 row = build_row(
-
                     motion,
                     gauge,
-
                     start_time,
                     sequence
                 )
 
-                # -------------------------------------------------
-                # Write row
-                # -------------------------------------------------
+                # =================================================
+                # WRITE
+                # =================================================
 
                 writer.writerow(row)
 
@@ -815,17 +995,15 @@ def csv_writer():
 
                 sequence += 1
 
-                # -------------------------------------------------
-                # Next sample
-                # -------------------------------------------------
+                # =================================================
+                # NEXT SAMPLE
+                # =================================================
 
                 next_sample += (
                     SAMPLE_INTERVAL
                 )
 
-                # -------------------------------------------------
                 # Prevent burst after lag
-                # -------------------------------------------------
 
                 if now > (
                     next_sample
@@ -874,7 +1052,7 @@ if __name__ == "__main__":
     print()
 
     # --------------------------------------------------------
-    # MotionSim thread
+    # Start MotionSim
     # --------------------------------------------------------
 
     t1 = threading.Thread(
@@ -883,7 +1061,7 @@ if __name__ == "__main__":
     )
 
     # --------------------------------------------------------
-    # OutGauge thread
+    # Start OutGauge
     # --------------------------------------------------------
 
     t2 = threading.Thread(
@@ -895,7 +1073,7 @@ if __name__ == "__main__":
     t2.start()
 
     # --------------------------------------------------------
-    # Start CSV collection
+    # Start collector
     # --------------------------------------------------------
 
     try:
