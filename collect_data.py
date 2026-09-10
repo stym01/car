@@ -22,12 +22,10 @@ OUTPUT_FILE = "telemetry.csv"
 
 running = True
 
-# Latest packets
 motion_latest = None
 outgauge_latest = None
 
-# IMPORTANT:
-# Both UDP listener threads and the CSV writer use this lock.
+# One lock shared by all telemetry threads
 data_lock = threading.Lock()
 
 
@@ -36,7 +34,6 @@ data_lock = threading.Lock()
 # ============================================================
 
 def calculate_speed(vx, vy, vz):
-
     return math.sqrt(
         vx * vx +
         vy * vy +
@@ -46,25 +43,23 @@ def calculate_speed(vx, vy, vz):
 
 def calculate_direction(vx, vy, vz):
 
-    speed = calculate_speed(
-        vx,
-        vy,
-        vz
-    )
+    speed = calculate_speed(vx, vy, vz)
 
     if speed < 0.1:
-
-        return (
-            float("nan"),
-            float("nan"),
-            float("nan")
-        )
+        return 0.0, 0.0, 0.0
 
     return (
         vx / speed,
         vy / speed,
         vz / speed
     )
+
+
+def safe_float(value, default=float("nan")):
+    try:
+        return float(value)
+    except:
+        return default
 
 
 # ============================================================
@@ -90,56 +85,37 @@ def motion_listener():
         (HOST, MOTIONSIM_PORT)
     )
 
-    # Timeout allows the thread to notice
-    # when running becomes False.
     sock.settimeout(1.0)
 
     print(
-        f"[MotionSim] Listening on "
-        f"{MOTIONSIM_PORT}"
+        f"[MotionSim] Listening on {MOTIONSIM_PORT}"
     )
 
     while running:
 
         try:
-
-            data, _ = sock.recvfrom(
-                4096
-            )
+            data, _ = sock.recvfrom(4096)
 
         except socket.timeout:
-
             continue
 
         except Exception:
-
             continue
 
-        # Expected packet:
-        #
-        # 4 byte header
-        # +
-        # 21 floats
-        #
-        # = 88 bytes
-
+        # BNG1 + 21 floats = 88 bytes
         if len(data) != 88:
-
             continue
 
         try:
-
             values = struct.unpack(
                 "<4s21f",
                 data
             )
 
         except struct.error:
-
             continue
 
         if values[0] != b"BNG1":
-
             continue
 
         vx = values[4]
@@ -152,12 +128,10 @@ def motion_listener():
             vz
         )
 
-        dir_x, dir_y, dir_z = (
-            calculate_direction(
-                vx,
-                vy,
-                vz
-            )
+        dir_x, dir_y, dir_z = calculate_direction(
+            vx,
+            vy,
+            vz
         )
 
         sample = {
@@ -165,108 +139,50 @@ def motion_listener():
             "timestamp":
                 time.perf_counter(),
 
-            # ------------------------------------------------
             # Position
-            # ------------------------------------------------
+            "x_m": values[1],
+            "y_m": values[2],
+            "z_m": values[3],
 
-            "x_m":
-                values[1],
-
-            "y_m":
-                values[2],
-
-            "z_m":
-                values[3],
-
-            # ------------------------------------------------
             # Velocity
-            # ------------------------------------------------
+            "vx_mps": vx,
+            "vy_mps": vy,
+            "vz_mps": vz,
 
-            "vx_mps":
-                vx,
+            "speed_mps": speed,
 
-            "vy_mps":
-                vy,
+            # Linear acceleration
+            "ax_mps2": values[7],
+            "ay_mps2": values[8],
+            "az_mps2": values[9],
 
-            "vz_mps":
-                vz,
-
-            "speed_mps":
-                speed,
-
-            # ------------------------------------------------
-            # Acceleration
-            # ------------------------------------------------
-
-            "ax_mps2":
-                values[7],
-
-            "ay_mps2":
-                values[8],
-
-            "az_mps2":
-                values[9],
-
-            # ------------------------------------------------
             # Direction
-            # ------------------------------------------------
+            "dir_x": dir_x,
+            "dir_y": dir_y,
+            "dir_z": dir_z,
 
-            "dir_x":
-                dir_x,
-
-            "dir_y":
-                dir_y,
-
-            "dir_z":
-                dir_z,
-
-            # ------------------------------------------------
             # Orientation
-            # ------------------------------------------------
+            "roll": values[13],
+            "pitch": values[14],
+            "yaw": values[15],
 
-            "roll":
-                values[13],
-
-            "pitch":
-                values[14],
-
-            "yaw":
-                values[15],
-
-            # ------------------------------------------------
             # Angular velocity
-            # ------------------------------------------------
+            "roll_vel": values[16],
+            "pitch_vel": values[17],
+            "yaw_vel": values[18],
 
-            "roll_vel":
-                values[16],
-
-            "pitch_vel":
-                values[17],
-
-            "yaw_vel":
-                values[18],
-
-            # ------------------------------------------------
             # Angular acceleration
-            # ------------------------------------------------
-
-            "roll_acc":
-                values[19],
-
-            "pitch_acc":
-                values[20],
-
-            "yaw_acc":
-                values[21],
+            "roll_acc": values[19],
+            "pitch_acc": values[20],
+            "yaw_acc": values[21],
         }
 
         with data_lock:
-
             motion_latest = sample
 
 
 # ============================================================
-# OUTGAUGE LISTENER
+# OUTGAUGE
 # ============================================================
 
 def outgauge_listener():
@@ -291,41 +207,63 @@ def outgauge_listener():
     sock.settimeout(1.0)
 
     print(
-        f"[OutGauge] Listening on "
-        f"{OUTGAUGE_PORT}"
+        f"[OutGauge] Listening on {OUTGAUGE_PORT}"
     )
 
     while running:
 
         try:
-
-            data, _ = sock.recvfrom(
-                4096
-            )
+            data, _ = sock.recvfrom(4096)
 
         except socket.timeout:
-
             continue
 
         except Exception:
-
             continue
-
-        # Expected OutGauge packet
-        # is 96 bytes.
 
         if len(data) != 96:
-
             continue
+
+        # ----------------------------------------------------
+        # BeamNG / Live for Speed OutGauge structure
+        #
+        # 96 bytes total:
+        #
+        # uint32 time
+        # char   car[4]
+        # uint16 flags
+        # byte   gear
+        # byte   plid
+        # float  speed
+        # float  rpm
+        # float  turbo
+        # float  engtemp
+        # float  fuel
+        # float  oilpressure
+        # float  oiltemp
+        # uint32 dashlights
+        # uint32 showlights
+        # float  throttle
+        # float  brake
+        # float  clutch
+        # char   display[16]
+        # char   id[4]
+        #
+        # ----------------------------------------------------
 
         try:
 
             values = struct.unpack(
-                "<I4sHbb7f2I3f32si",
+                "<I4sHBB7f2I3f16s4s",
                 data
             )
 
-        except struct.error:
+        except struct.error as e:
+
+            print(
+                "[OutGauge] Packet decode error:",
+                e
+            )
 
             continue
 
@@ -335,11 +273,15 @@ def outgauge_listener():
                 time.perf_counter(),
 
             # ------------------------------------------------
-            # Driver / engine
+            # Vehicle state
             # ------------------------------------------------
 
             "gear_index":
                 values[3],
+
+            # ------------------------------------------------
+            # Engine
+            # ------------------------------------------------
 
             "speed_mps":
                 values[5],
@@ -348,7 +290,7 @@ def outgauge_listener():
                 values[6],
 
             # ------------------------------------------------
-            # Temperatures
+            # Engine temperatures
             # ------------------------------------------------
 
             "coolant_c":
@@ -364,7 +306,7 @@ def outgauge_listener():
                 values[11],
 
             # ------------------------------------------------
-            # Controls
+            # Driver inputs
             # ------------------------------------------------
 
             "throttle":
@@ -378,156 +320,106 @@ def outgauge_listener():
         }
 
         with data_lock:
-
             outgauge_latest = sample
 
 
 # ============================================================
-# CSV FIELD NAMES
+# CSV FIELDS
 # ============================================================
 
 FIELDS = [
 
-    # --------------------------------------------------------
-    # Time
-    # --------------------------------------------------------
-
     "t_s",
     "seq",
 
-    # --------------------------------------------------------
     # Position
-    # --------------------------------------------------------
-
     "x_m",
     "y_m",
     "z_m",
 
-    # --------------------------------------------------------
     # Velocity
-    # --------------------------------------------------------
-
     "vx_mps",
     "vy_mps",
     "vz_mps",
 
     "speed_mps",
 
-    # --------------------------------------------------------
     # Acceleration
-    # --------------------------------------------------------
-
     "ax_mps2",
     "ay_mps2",
     "az_mps2",
 
-    # --------------------------------------------------------
     # Direction
-    # --------------------------------------------------------
-
     "dir_x",
     "dir_y",
     "dir_z",
 
-    # --------------------------------------------------------
-    # Vehicle / engine
-    # --------------------------------------------------------
-
+    # Vehicle
     "mass_kg",
 
+    # Engine
     "rpm",
-
     "engine_torque_nm",
-
     "engine_av_rads",
-
     "engine_load",
-
     "exhaust_flow",
 
+    # Transmission
     "gear_index",
-
     "clutch_ratio",
 
+    # Driver input
     "throttle",
-
     "brake",
-
     "steering",
 
-    # --------------------------------------------------------
     # Wheels
-    # --------------------------------------------------------
-
     "wheel_av_fl",
     "wheel_av_fr",
     "wheel_av_rl",
     "wheel_av_rr",
 
-    # --------------------------------------------------------
-    # Brakes
-    # --------------------------------------------------------
-
+    # Brake temperature
     "brake_temp_fl",
     "brake_temp_fr",
     "brake_temp_rl",
     "brake_temp_rr",
 
-    # --------------------------------------------------------
     # Aerodynamics
-    # --------------------------------------------------------
-
     "downforce_fl",
 
-    # --------------------------------------------------------
     # Temperatures
-    # --------------------------------------------------------
-
     "coolant_c",
     "oil_c",
 
-    # --------------------------------------------------------
     # Fuel / distance
-    # --------------------------------------------------------
-
     "fuel_volume_l",
     "odometer_m",
     "trip_m",
     "altitude_m",
 
-    # --------------------------------------------------------
     # Vehicle state
-    # --------------------------------------------------------
-
     "ignition_level",
     "parkingbrake",
-
     "avg_wheel_av",
-
     "engine_running",
-
     "damage",
 
-    # --------------------------------------------------------
-    # BATTERY
-    #
-    # These are deliberately blank because the current
-    # UDP packets don't provide them.
-    # --------------------------------------------------------
-
+    # Battery
     "battery_voltage_v",
-
     "battery_current_a",
-
     "battery_temperature_c",
+    "battery_soc",
 
-    "battery_soc"
+    # Additional useful values
+    "oil_pressure",
 ]
 
 
 # ============================================================
-# CREATE CSV ROW
+# BUILD COMBINED ROW
 # ============================================================
+
 def build_row(
     motion,
     gauge,
@@ -535,14 +427,18 @@ def build_row(
     sequence
 ):
 
+    # Start with NaN for every field.
+    # This prevents missing values from causing
+    # KeyError or malformed CSV rows.
+
     row = {
         field: float("nan")
         for field in FIELDS
     }
 
-    # ========================================================
+    # --------------------------------------------------------
     # TIME
-    # ========================================================
+    # --------------------------------------------------------
 
     row["t_s"] = (
         time.perf_counter()
@@ -551,35 +447,58 @@ def build_row(
 
     row["seq"] = sequence
 
-    # ========================================================
-    # MOTION DATA
-    # ========================================================
+    # --------------------------------------------------------
+    # MOTION
+    # --------------------------------------------------------
 
     if motion is not None:
 
         for key in [
+
             "x_m",
             "y_m",
             "z_m",
+
             "vx_mps",
             "vy_mps",
             "vz_mps",
+
             "speed_mps",
+
             "ax_mps2",
             "ay_mps2",
             "az_mps2",
+
             "dir_x",
             "dir_y",
             "dir_z"
         ]:
 
             if key in motion:
-
                 row[key] = motion[key]
 
-    # ========================================================
-    # OUTGAUGE DATA
-    # ========================================================
+        # Orientation
+        for key in [
+
+            "roll",
+            "pitch",
+            "yaw",
+
+            "roll_vel",
+            "pitch_vel",
+            "yaw_vel",
+
+            "roll_acc",
+            "pitch_acc",
+            "yaw_acc"
+        ]:
+
+            if key in motion:
+                row[key] = motion[key]
+
+    # --------------------------------------------------------
+    # OUTGAUGE
+    # --------------------------------------------------------
 
     if gauge is not None:
 
@@ -591,40 +510,80 @@ def build_row(
 
         if "speed_mps" in gauge:
 
-            # Use OutGauge speed only if MotionSim
-            # speed isn't available.
-            if math.isnan(row["speed_mps"]):
-                row["speed_mps"] = gauge["speed_mps"]
+            # MotionSim is our preferred speed source.
+            if math.isnan(
+                row["speed_mps"]
+            ):
+                row["speed_mps"] = (
+                    gauge["speed_mps"]
+                )
 
         if "coolant_c" in gauge:
-            row["coolant_c"] = gauge["coolant_c"]
-
-        if "fuel" in gauge:
-            row["fuel_volume_l"] = gauge["fuel"]
+            row["coolant_c"] = (
+                gauge["coolant_c"]
+            )
 
         if "oil_c" in gauge:
-            row["oil_c"] = gauge["oil_c"]
+            row["oil_c"] = (
+                gauge["oil_c"]
+            )
+
+        if "oil_pressure" in gauge:
+            row["oil_pressure"] = (
+                gauge["oil_pressure"]
+            )
+
+        if "fuel" in gauge:
+            row["fuel_volume_l"] = (
+                gauge["fuel"]
+            )
 
         if "throttle" in gauge:
-            row["throttle"] = gauge["throttle"]
+            row["throttle"] = (
+                gauge["throttle"]
+            )
 
         if "brake" in gauge:
-            row["brake"] = gauge["brake"]
+            row["brake"] = (
+                gauge["brake"]
+            )
 
         if "clutch" in gauge:
-            row["clutch_ratio"] = gauge["clutch"]
+            row["clutch_ratio"] = (
+                gauge["clutch"]
+            )
 
-    # ========================================================
+    # --------------------------------------------------------
     # ENGINE ANGULAR VELOCITY
-    # ========================================================
+    #
+    # rpm → rad/s
+    # --------------------------------------------------------
 
-    if not math.isnan(row["rpm"]):
+    if not math.isnan(
+        row["rpm"]
+    ):
 
         row["engine_av_rads"] = (
             row["rpm"]
             * 2.0
             * math.pi
             / 60.0
+        )
+
+    # --------------------------------------------------------
+    # ENGINE RUNNING
+    #
+    # Derived conservatively from RPM.
+    # --------------------------------------------------------
+
+    if not math.isnan(
+        row["rpm"]
+    ):
+
+        row["engine_running"] = (
+            1
+            if row["rpm"] > 100
+            else 0
         )
 
     return row
@@ -655,7 +614,6 @@ def csv_writer():
         )
 
         writer.writeheader()
-
         f.flush()
 
         sequence = 0
@@ -675,9 +633,7 @@ def csv_writer():
             if now >= next_sample:
 
                 # --------------------------------------------
-                # IMPORTANT:
-                # Copy both telemetry packets while holding
-                # the same lock used by listener threads.
+                # Copy latest data safely
                 # --------------------------------------------
 
                 with data_lock:
@@ -697,7 +653,7 @@ def csv_writer():
                     )
 
                 # --------------------------------------------
-                # Build combined row
+                # Create combined row
                 # --------------------------------------------
 
                 row = build_row(
@@ -707,24 +663,22 @@ def csv_writer():
                     sequence
                 )
 
-                writer.writerow(
-                    row
-                )
+                writer.writerow(row)
 
                 f.flush()
 
                 sequence += 1
 
                 # --------------------------------------------
-                # Schedule next sample
+                # Schedule next 5 Hz sample
                 # --------------------------------------------
 
                 next_sample += (
                     SAMPLE_INTERVAL
                 )
 
-                # Prevent runaway if the computer
-                # was paused for a while.
+                # If the computer was paused,
+                # don't generate a burst of rows.
                 if now > (
                     next_sample
                     + SAMPLE_INTERVAL * 10
@@ -737,9 +691,7 @@ def csv_writer():
 
             else:
 
-                time.sleep(
-                    0.002
-                )
+                time.sleep(0.002)
 
 
 # ============================================================
@@ -763,8 +715,7 @@ if __name__ == "__main__":
     print()
 
     print(
-        f"[CSV] Output: "
-        f"{OUTPUT_FILE}"
+        f"[CSV] Output: {OUTPUT_FILE}"
     )
 
     print(
@@ -773,13 +724,17 @@ if __name__ == "__main__":
     )
 
     # --------------------------------------------------------
-    # Start listeners
+    # Start MotionSim
     # --------------------------------------------------------
 
     t1 = threading.Thread(
         target=motion_listener,
         daemon=True
     )
+
+    # --------------------------------------------------------
+    # Start OutGauge
+    # --------------------------------------------------------
 
     t2 = threading.Thread(
         target=outgauge_listener,
@@ -801,6 +756,8 @@ if __name__ == "__main__":
         )
 
         running = False
+
+        time.sleep(0.5)
 
     print()
     print(
