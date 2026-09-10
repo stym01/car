@@ -126,6 +126,7 @@ def csv_writer():
         "pos_x", "pos_y", "pos_z",
         "vel_x", "vel_y", "vel_z",
         "acc_x", "acc_y", "acc_z",
+        "up_x", "up_y", "up_z",
         "roll", "pitch", "yaw",
         "roll_vel", "pitch_vel", "yaw_vel",
         "roll_acc", "pitch_acc", "yaw_acc",
