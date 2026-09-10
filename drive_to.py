@@ -1,54 +1,60 @@
 from beamng_client import BeamNGMCP
 import time
 
-
 # ============================================================
-# DESTINATION
+# POINT B
 # ============================================================
-
-# CHANGE THIS TO YOUR POINT B
 
 POINT_B = {
-    "x": 800.0,
-    "y": -350.0,
-    "z": 160.0
+    "x": -822.21875,
+    "y": -835.28070068359,
+    "z": 119.6600189209
 }
 
 
 # ============================================================
-# SETTINGS
+# DRIVING SETTINGS
 # ============================================================
 
-ROUTE_SPEED = 8.0       # m/s ≈ 29 km/h
-AGGRESSION = 0.3        # calm driving
-AVOID_CARS = "on"
-DRIVE_IN_LANE = "on"
+# 6 m/s ≈ 21.6 km/h
+# Start slowly so we can verify the route is safe.
+ROUTE_SPEED = 6.0
+
+# Lower = more cautious
+AGGRESSION = 0.1
 
 
 # ============================================================
-# START
+# CONNECT TO BEAMNG MCP
 # ============================================================
+
+print("==============================")
+print(" BeamNG A -> B Test")
+print("==============================")
 
 bng = BeamNGMCP()
 
-print("==============================")
-print(" BeamNG A → B Test")
-print("==============================")
 
+# ============================================================
+# GET STARTING POSITION
+# ============================================================
 
-# Get current position
+print("\nGetting starting position...")
 
-print("\nCurrent vehicle:")
-
-position = bng.call(
+start = bng.call(
     "get_position",
     {}
 )
 
-print(position)
+print("START:")
+print(start)
 
 
-# Clear previous instability events
+# ============================================================
+# CLEAR OLD INSTABILITY EVENTS
+# ============================================================
+
+print("\nClearing previous instability events...")
 
 bng.call(
     "get_instability",
@@ -59,10 +65,17 @@ bng.call(
 
 
 # ============================================================
-# SEND A → B COMMAND
+# DRIVE TO POINT B
 # ============================================================
 
-print("\nSending vehicle to Point B...")
+print("\n==============================")
+print("Driving to Point B")
+print("==============================")
+
+print(f"Point B:")
+print(f"X = {POINT_B['x']}")
+print(f"Y = {POINT_B['y']}")
+print(f"Z = {POINT_B['z']}")
 
 result = bng.call(
     "drive_to",
@@ -75,24 +88,23 @@ result = bng.call(
 
         "aggression": AGGRESSION,
 
-        "avoidCars": AVOID_CARS,
+        "avoidCars": "on",
 
-        "driveInLane": DRIVE_IN_LANE
+        "driveInLane": "on"
     }
 )
 
-print("\nDrive command result:")
+print("\nDrive command:")
 print(result)
 
 
-print("\nBeamNG AI is now driving.")
-
-print("Press Ctrl+C to stop monitoring.")
-
-
 # ============================================================
-# MONITOR
+# MONITOR VEHICLE
 # ============================================================
+
+print("\nVehicle is driving...")
+print("Press CTRL+C to stop.\n")
+
 
 try:
 
@@ -105,10 +117,7 @@ try:
             {}
         )
 
-        print(
-            "\nPOSITION:"
-        )
-
+        print("\nPOSITION:")
         print(position)
 
 
@@ -119,19 +128,15 @@ try:
             }
         )
 
-        print(
-            "INSTABILITY:"
-        )
-
+        print("\nINSTABILITY:")
         print(instability)
 
 
 except KeyboardInterrupt:
 
-    print("\nStopping vehicle...")
+    print("\nStopping test...")
 
-    # Full brake
-
+    # Stop throttle
     bng.call(
         "inject_input",
         {
@@ -140,6 +145,7 @@ except KeyboardInterrupt:
         }
     )
 
+    # Apply brake
     bng.call(
         "inject_input",
         {
@@ -148,6 +154,7 @@ except KeyboardInterrupt:
         }
     )
 
+    # Center steering
     bng.call(
         "inject_input",
         {
