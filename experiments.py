@@ -1321,8 +1321,6 @@ def diagnose_graph(nodes, graph):
 
 if __name__ == "__main__":
 
-    if __name__ == "__main__":
-
     navgraph = get_navgraph()
 
     raw_nodes = extract_nodes(
