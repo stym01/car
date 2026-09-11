@@ -25,7 +25,7 @@ ARRIVAL_DISTANCE_M = 15.0
 CHECK_INTERVAL = 1.0
 
 # Number of trips
-NUMBER_OF_TRIPS = 1
+EXPERIMENT_DURATION_SECONDS = 2 * 60 * 60
 
 # Maximum navgraph nodes
 MAX_NAV_NODES = 100000
@@ -896,20 +896,11 @@ def monitor_drive(
 
         if instability > 0:
 
-            print()
             print(
-                "=" * 60
+                f"Warning: instability detected "
+                f"({instability})"
             )
 
-            print(
-                "INSTABILITY DETECTED"
-            )
-
-            print(
-                "=" * 60
-            )
-
-            return False
 
         # ----------------------------------------------------
         # Arrival
@@ -1012,38 +1003,63 @@ def save_metadata(
 # ============================================================
 # MAIN
 # ============================================================
-
 def main():
 
     print()
     print("=" * 60)
-    print(
-        "       BEAMNG AUTOMATIC DATA COLLECTION"
-    )
+    print("       BEAMNG 2-HOUR AUTOMATIC DATA COLLECTION")
     print("=" * 60)
 
     print()
+    print(
+        "Experiment duration   : 2 hours"
+    )
 
     print(
         "Minimum ROAD distance : "
-        "5.0 km"
+        f"{MIN_ROUTE_DISTANCE_M / 1000:.1f} km"
     )
 
     print(
-        "Maximum speed          : "
-        "80 mph"
+        "Maximum speed          : 80 mph"
     )
 
     print(
-        "Aggression             : "
-        "NOT USED"
+        "Aggression             : NOT USED"
+    )
+
+    print()
+    print(
+        "The experiment will continuously"
+    )
+    print(
+        "generate new A → B trips."
+    )
+
+    print(
+        "Press CTRL+C to stop manually."
     )
 
     print()
 
-    # --------------------------------------------------------
+    # ========================================================
+    # START TIMER
+    # ========================================================
+
+    experiment_start = time.monotonic()
+
+    experiment_end = (
+        experiment_start
+        + EXPERIMENT_DURATION_SECONDS
+    )
+
+    successful = 0
+    failed = 0
+    trip = 0
+
+    # ========================================================
     # NAVGRAPH
-    # --------------------------------------------------------
+    # ========================================================
 
     navgraph = get_navgraph()
 
@@ -1059,14 +1075,10 @@ def main():
     if not raw_nodes:
 
         print(
-            "No navgraph nodes found."
+            "ERROR: No navgraph nodes found."
         )
 
         return
-
-    # --------------------------------------------------------
-    # NODES
-    # --------------------------------------------------------
 
     nodes = build_nodes(
         raw_nodes
@@ -1076,10 +1088,6 @@ def main():
         f"Usable road nodes: "
         f"{len(nodes)}"
     )
-
-    # --------------------------------------------------------
-    # GRAPH
-    # --------------------------------------------------------
 
     graph = build_graph(
         nodes
@@ -1098,75 +1106,106 @@ def main():
     if edge_count == 0:
 
         print(
-            "No usable road links found."
+            "ERROR: No usable road links."
         )
 
         return
 
     print()
+    print("=" * 60)
+    print("2-HOUR EXPERIMENT STARTED")
+    print("=" * 60)
 
-    # --------------------------------------------------------
-    # TRIPS
-    # --------------------------------------------------------
+    # ========================================================
+    # INFINITE TRIP LOOP
+    # UNTIL 2 HOURS ARE COMPLETE
+    # ========================================================
 
-    successful = 0
-    failed = 0
+    while time.monotonic() < experiment_end:
 
-    for trip in range(
-        1,
-        NUMBER_OF_TRIPS + 1
-    ):
+        trip += 1
+
+        remaining_time = (
+            experiment_end
+            - time.monotonic()
+        )
 
         print()
-        print(
-            "#" * 60
-        )
+        print()
+        print("#" * 60)
 
         print(
             f"                     TRIP {trip}"
         )
 
+        print("#" * 60)
+
         print(
-            "#" * 60
+            f"Time remaining: "
+            f"{remaining_time / 60:.1f} minutes"
         )
 
-        # ----------------------------------------------------
-        # SELECT A/B
-        # ----------------------------------------------------
+        # ====================================================
+        # FIND A → B
+        # ====================================================
 
-        point_a_node, point_b_node, route_distance = (
-            choose_a_b(
+        point_a_node = None
+        point_b_node = None
+        route_distance = None
+
+        try:
+
+            (
+                point_a_node,
+                point_b_node,
+                route_distance
+            ) = choose_a_b(
                 nodes,
                 graph
             )
-        )
+
+        except Exception as e:
+
+            print()
+            print(
+                "A → B search error:"
+            )
+
+            print(e)
+
+            failed += 1
+
+            time.sleep(2)
+
+            continue
+
+        # ====================================================
+        # NO ROUTE
+        # ====================================================
 
         if point_a_node is None:
 
             print()
             print(
-                "Could not find an A → B pair "
-                "with >= 5 km road distance."
+                "No suitable A → B route found."
             )
 
-            print()
-
             print(
-                "This means the currently loaded "
-                "road network may have no connected "
-                "route longer than 5 km."
+                "Trying again with a new Point A..."
             )
 
             failed += 1
 
+            time.sleep(2)
+
             continue
+
+        # ====================================================
+        # POINTS
+        # ====================================================
 
         point_a = point_a_node["pos"]
         point_b = point_b_node["pos"]
-
-        # ----------------------------------------------------
-        # PRINT A
-        # ----------------------------------------------------
 
         print()
         print("POINT A")
@@ -1186,10 +1225,6 @@ def main():
         print(
             f"Z = {point_a['z']:.3f}"
         )
-
-        # ----------------------------------------------------
-        # PRINT B
-        # ----------------------------------------------------
 
         print()
         print("POINT B")
@@ -1211,9 +1246,8 @@ def main():
         )
 
         print()
-
         print(
-            "ACTUAL ROAD DISTANCE:"
+            "PLANNED ROAD DISTANCE:"
         )
 
         print(
@@ -1224,82 +1258,202 @@ def main():
             f"{route_distance / 1000:.2f} km"
         )
 
-        # ----------------------------------------------------
-        # TELEPORT
-        # ----------------------------------------------------
+        # ====================================================
+        # TELEPORT TO A
+        # ====================================================
 
-        teleport_to(
-            point_a
-        )
+        try:
 
-        # ----------------------------------------------------
-        # DRIVE
-        # ----------------------------------------------------
+            teleport_to(
+                point_a
+            )
 
-        drive_to(
-            point_b
-        )
+        except Exception as e:
 
-        # ----------------------------------------------------
-        # MONITOR
-        # ----------------------------------------------------
+            print()
+            print(
+                "Teleport failed:"
+            )
 
-        success = monitor_drive(
-            point_b,
-            route_distance
-        )
+            print(e)
 
-        # ----------------------------------------------------
-        # SAVE
-        # ----------------------------------------------------
-
-        save_metadata(
-            trip,
-            point_a,
-            point_b,
-            route_distance,
-            success
-        )
-
-        if success:
-            successful += 1
-        else:
             failed += 1
 
-    # --------------------------------------------------------
-    # SUMMARY
-    # --------------------------------------------------------
+            continue
+
+        # ====================================================
+        # START DRIVE
+        # ====================================================
+
+        try:
+
+            drive_to(
+                point_b
+            )
+
+        except Exception as e:
+
+            print()
+            print(
+                "Drive command failed:"
+            )
+
+            print(e)
+
+            failed += 1
+
+            continue
+
+        # ====================================================
+        # MONITOR
+        # ====================================================
+
+        try:
+
+            success = monitor_drive(
+                point_b,
+                route_distance
+            )
+
+        except KeyboardInterrupt:
+
+            raise
+
+        except Exception as e:
+
+            print()
+            print(
+                "Monitoring error:"
+            )
+
+            print(e)
+
+            success = False
+
+        # ====================================================
+        # SAVE METADATA
+        # ====================================================
+
+        try:
+
+            save_metadata(
+                trip,
+                point_a,
+                point_b,
+                route_distance,
+                success
+            )
+
+        except Exception as e:
+
+            print()
+            print(
+                "Metadata save failed:"
+            )
+
+            print(e)
+
+        # ====================================================
+        # RESULT
+        # ====================================================
+
+        if success:
+
+            successful += 1
+
+            print()
+            print(
+                f"TRIP {trip} COMPLETED ✓"
+            )
+
+        else:
+
+            failed += 1
+
+            print()
+            print(
+                f"TRIP {trip} FAILED"
+            )
+
+        # ====================================================
+        # CHECK TIME
+        # ====================================================
+
+        remaining_time = (
+            experiment_end
+            - time.monotonic()
+        )
+
+        if remaining_time <= 0:
+
+            break
+
+        print()
+        print(
+            "Preparing next random A → B trip..."
+        )
+
+        # Small pause so BeamNG can settle
+        time.sleep(2)
+
+    # ========================================================
+    # EXPERIMENT FINISHED
+    # ========================================================
+
+    elapsed = (
+        time.monotonic()
+        - experiment_start
+    )
 
     print()
+    print()
     print("=" * 60)
-    print("EXPERIMENT COMPLETE")
+
+    print(
+        "             2-HOUR EXPERIMENT COMPLETE"
+    )
+
     print("=" * 60)
 
     print()
 
     print(
-        f"Successful trips: "
+        f"Elapsed time      : "
+        f"{elapsed / 3600:.2f} hours"
+    )
+
+    print(
+        f"Trips attempted   : "
+        f"{trip}"
+    )
+
+    print(
+        f"Successful trips  : "
         f"{successful}"
     )
 
     print(
-        f"Failed trips: "
+        f"Failed trips      : "
         f"{failed}"
     )
 
     print()
 
     print(
-        "Remember:"
+        "Telemetry is stored continuously"
     )
 
     print(
-        "Run collect_data.py separately "
-        "to record telemetry."
+        "in telemetry.csv."
     )
 
     print()
 
+    print(
+        "Experiment finished."
+    )
+
+    print("=" * 60)
 
 # ============================================================
 # RUN
